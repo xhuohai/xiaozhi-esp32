@@ -10,7 +10,7 @@
 
 #include "application.h"
 #include "board.h"
-#include "secret_config.h"
+#include "../secret_config.h"
 
 #ifndef AI_USAGE_API_URL
 #define AI_USAGE_API_URL ""
@@ -191,7 +191,8 @@ void AiUsageManager::MaybeFetch(bool force) {
     BumpRevision();
 
     AiUsageSnapshot parsed;
-    bool ok = FetchUsage(parsed);
+    bool ok = FetchUsage(parsed, force);
+    last_fetch_ok_.store(ok);
     if (ok) {
         StoreSnapshot(parsed);
         ESP_LOGI(TAG, "parsed gpt=%d cursor=%d gpt_plan=%s cursor_plan=%s heap=%u psram=%u",
@@ -212,7 +213,7 @@ void AiUsageManager::MaybeFetch(bool force) {
     BumpRevision();
 }
 
-bool AiUsageManager::FetchUsage(AiUsageSnapshot& snapshot) {
+bool AiUsageManager::FetchUsage(AiUsageSnapshot& snapshot, bool force) {
     if (!UrlLooksConfigured(AI_USAGE_API_URL)) {
         ESP_LOGW(TAG, "API URL not configured");
         return false;
@@ -224,16 +225,22 @@ bool AiUsageManager::FetchUsage(AiUsageSnapshot& snapshot) {
         return false;
     }
 
-    auto http = network->CreateHttp(0);
+    auto http = network->CreateHttp(5);
     if (!http) {
         ESP_LOGW(TAG, "failed to create HTTP client");
         return false;
     }
 
+    http->SetTimeout(15000);
+
     std::string auth = "Bearer ";
     auth += AI_USAGE_API_TOKEN;
     http->SetHeader("Authorization", auth.c_str());
     http->SetHeader("Accept", "application/json");
+    if (force) {
+        http->SetHeader("Cache-Control", "no-cache");
+        http->SetHeader("X-Refresh", "1");
+    }
 
     if (!http->Open("GET", AI_USAGE_API_URL)) {
         ESP_LOGW(TAG, "HTTP open failed");
@@ -325,6 +332,16 @@ static void ParseCursor(cJSON* cursor, CursorUsage& out) {
     double api_used = 0;
     if (JsonGetNumber(cursor, "api_used_percent", &api_used)) {
         out.api_used_percent = static_cast<float>(api_used);
+    }
+
+    cJSON* grok = cJSON_GetObjectItem(cursor, "grok_bot");
+    if (cJSON_IsObject(grok)) {
+        JsonGetBool(grok, "available", &out.grok_available);
+        double grok_used = 0;
+        if (JsonGetNumber(grok, "used_percent", &grok_used)) {
+            out.grok_used_percent = static_cast<float>(grok_used);
+        }
+        JsonGetTime(grok, "reset_at", &out.grok_reset_at);
     }
 
     cJSON* on_demand = cJSON_GetObjectItem(cursor, "on_demand");

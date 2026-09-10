@@ -70,7 +70,7 @@ void SensorManager::initRTC() {
     i2c_master_transmit(pcf85063_handle_, cmd, sizeof(cmd), pdMS_TO_TICKS(100));
 }
 
-void SensorManager::syncNtpTime() {
+bool SensorManager::syncNtpTime() {
     // 同步前确保时区设置正确（防止被 ota.cc 的 settimeofday 等操作干扰）
     setenv("TZ", TIMEZONE_STRING, 1);
     tzset();
@@ -84,7 +84,8 @@ void SensorManager::syncNtpTime() {
         ESP_LOGI(TAG, "等待 NTP 响应... (%d/5)", retry);
     }
 
-    if (retry < 5) {
+    bool ok = (retry < 5);
+    if (ok) {
         // NTP 同步成功后再次确认时区（以防其他模块覆盖）
         setenv("TZ", TIMEZONE_STRING, 1);
         tzset();
@@ -102,6 +103,7 @@ void SensorManager::syncNtpTime() {
     }
     
     esp_netif_sntp_deinit();
+    return ok;
 }
 
 SensorData SensorManager::getTempHumidity() {

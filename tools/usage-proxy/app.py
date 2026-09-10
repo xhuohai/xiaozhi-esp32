@@ -27,6 +27,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("usage-proxy")
 
 CURSOR_USAGE_URL = "https://cursor.com/api/usage-summary"
+CURSOR_GROK_URL = "https://cursor.com/api/dashboard/get-sand-usage-status"
 GPT_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 PROVIDER_TIMEOUT_S = 10.0
 CACHE_TTL_S = 60
@@ -165,6 +166,22 @@ def _contains_forbidden_keys(payload: Any) -> list[str]:
     return found
 
 
+def resolve_gpt_credentials() -> tuple[str | None, str | None, str | None]:
+    env_token = _as_str(os.getenv("CODEX_ACCESS_TOKEN") or os.getenv("CHATGPT_ACCESS_TOKEN"))
+    env_account = _as_str(os.getenv("CHATGPT_ACCOUNT_ID") or os.getenv("CODEX_ACCOUNT_ID"))
+    file_token = None
+    file_account = None
+    file_error = None
+    if not env_token or not env_account:
+        auth_file = os.getenv("CODEX_AUTH_FILE", "~/.codex/auth.json")
+        file_token, file_account, file_error = load_codex_auth(auth_file)
+    access_token = env_token or file_token
+    account_id = env_account or file_account
+    if not access_token:
+        return None, None, file_error or "gpt_auth_missing"
+    return access_token, account_id, None
+
+
 def load_codex_auth(auth_file: str) -> tuple[str | None, str | None, str | None]:
     path = _expand_path(auth_file)
     try:
@@ -290,6 +307,34 @@ def normalize_cursor_payload(payload: Any) -> dict[str, Any]:
         },
         "cycle_start": parse_epoch(payload.get("billingCycleStart")) or 0,
         "cycle_end": parse_epoch(payload.get("billingCycleEnd")) or 0,
+        "grok_bot": _empty_grok_bot(),
+    }
+
+
+def normalize_grok_bot(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    has_limit = payload.get("hasNonZeroIncludedLimit")
+    used = _as_float(
+        payload.get("usagePercent")
+        or payload.get("usedPercent")
+        or payload.get("percentUsed")
+        or payload.get("includedUsagePercent")
+    )
+    reset_at = parse_epoch(
+        payload.get("nextResetTimestampUtc")
+        or payload.get("nextResetAt")
+        or payload.get("resetAt")
+        or payload.get("reset_at")
+    )
+    if has_limit is False:
+        return _empty_grok_bot()
+    if used is None and has_limit is not True:
+        return None
+    return {
+        "available": True,
+        "used_percent": used if used is not None else 0.0,
+        "reset_at": reset_at or 0,
     }
 
 
@@ -319,6 +364,14 @@ def _empty_gpt() -> dict[str, Any]:
     }
 
 
+def _empty_grok_bot() -> dict[str, Any]:
+    return {
+        "available": False,
+        "used_percent": 0.0,
+        "reset_at": 0,
+    }
+
+
 def _empty_cursor() -> dict[str, Any]:
     return {
         "plan": "",
@@ -332,12 +385,19 @@ def _empty_cursor() -> dict[str, Any]:
         },
         "cycle_start": 0,
         "cycle_end": 0,
+        "grok_bot": _empty_grok_bot(),
     }
 
 
+def _cursor_session_token() -> str:
+    token = (os.getenv("CURSOR_SESSION_TOKEN") or "").strip()
+    if token.startswith("WorkosCursorSessionToken="):
+        token = token.split("=", 1)[1]
+    return token
+
+
 async def fetch_gpt() -> tuple[dict[str, Any] | None, str | None]:
-    auth_file = os.getenv("CODEX_AUTH_FILE", "~/.codex/auth.json")
-    access_token, account_id, error = load_codex_auth(auth_file)
+    access_token, account_id, error = resolve_gpt_credentials()
     if error:
         return None, error
 
@@ -360,7 +420,7 @@ async def fetch_gpt() -> tuple[dict[str, Any] | None, str | None]:
         return None, "gpt_request_failed"
 
     if response.status_code in (401, 403):
-        logger.warning("gpt auth expired, run: codex login")
+        logger.warning("gpt auth expired")
         return None, "gpt_auth_expired"
     if response.status_code != 200:
         logger.warning("gpt provider http %s", response.status_code)
@@ -375,9 +435,7 @@ async def fetch_gpt() -> tuple[dict[str, Any] | None, str | None]:
 
 
 async def fetch_cursor() -> tuple[dict[str, Any] | None, str | None]:
-    token = (os.getenv("CURSOR_SESSION_TOKEN") or "").strip()
-    if token.startswith("WorkosCursorSessionToken="):
-        token = token.split("=", 1)[1]
+    token = _cursor_session_token()
     if not token:
         return None, "cursor_auth_missing"
 
@@ -412,6 +470,48 @@ async def fetch_cursor() -> tuple[dict[str, Any] | None, str | None]:
         return None, "cursor_parse_error"
 
 
+async def fetch_cursor_grok() -> tuple[dict[str, Any] | None, str | None]:
+    token = _cursor_session_token()
+    if not token:
+        return None, "cursor_auth_missing"
+
+    headers = {
+        **BROWSER_HEADERS,
+        "Cookie": f"WorkosCursorSessionToken={token}",
+        "Origin": "https://cursor.com",
+        "Referer": "https://cursor.com/dashboard",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUT_S, follow_redirects=True) as client:
+            response = await client.post(CURSOR_GROK_URL, headers=headers, json={})
+    except httpx.TimeoutException:
+        logger.warning("grok bot provider timeout")
+        return None, "grok_request_failed"
+    except httpx.HTTPError:
+        logger.warning("grok bot provider request failed")
+        return None, "grok_request_failed"
+
+    if response.status_code in (401, 403):
+        logger.warning("grok bot auth expired")
+        return None, "cursor_auth_expired"
+    if response.status_code != 200:
+        logger.warning("grok bot provider http %s", response.status_code)
+        return None, "grok_request_failed"
+
+    try:
+        payload = response.json()
+        parsed = normalize_grok_bot(payload)
+        if parsed is None:
+            logger.warning("grok bot provider parse failed")
+            return None, "grok_parse_error"
+        return parsed, None
+    except (ValueError, json.JSONDecodeError, TypeError):
+        logger.warning("grok bot provider parse failed")
+        return None, "grok_parse_error"
+
+
 def _apply_fetch_result(
     last_good: dict[str, Any] | None,
     fetched: dict[str, Any] | None,
@@ -432,9 +532,20 @@ def _apply_fetch_result(
 async def build_usage_payload() -> dict[str, Any]:
     global _gpt_last_good, _cursor_last_good
 
-    gpt_result, cursor_result = await asyncio.gather(fetch_gpt(), fetch_cursor())
+    gpt_result, cursor_result, grok_result = await asyncio.gather(
+        fetch_gpt(), fetch_cursor(), fetch_cursor_grok()
+    )
     gpt_data, gpt_error = gpt_result
     cursor_data, cursor_error = cursor_result
+    grok_data, _grok_error = grok_result
+
+    if cursor_data is not None:
+        if grok_data is not None:
+            cursor_data["grok_bot"] = grok_data
+        elif isinstance(_cursor_last_good, dict) and isinstance(
+            _cursor_last_good.get("grok_bot"), dict
+        ):
+            cursor_data["grok_bot"] = _cursor_last_good["grok_bot"]
 
     gpt_body, _gpt_last_good = _apply_fetch_result(
         _gpt_last_good, gpt_data, gpt_error, _empty_gpt()
@@ -481,6 +592,12 @@ async def healthz() -> dict[str, bool]:
     return {"ok": True}
 
 
+def _wants_fresh(request: Request) -> bool:
+    refresh = (request.headers.get("x-refresh") or "").strip()
+    cache_control = (request.headers.get("cache-control") or "").lower()
+    return refresh == "1" or "no-cache" in cache_control
+
+
 @app.get("/api/v1/ai-usage")
 async def ai_usage(request: Request) -> JSONResponse:
     _require_device_token(request)
@@ -488,15 +605,21 @@ async def ai_usage(request: Request) -> JSONResponse:
     global _cached_body, _cached_at
     async with _cache_lock:
         now = time.time()
-        if _cached_body is not None and (now - _cached_at) < CACHE_TTL_S:
+        if (
+            not _wants_fresh(request)
+            and _cached_body is not None
+            and (now - _cached_at) < CACHE_TTL_S
+        ):
             return JSONResponse(_cached_body)
 
         payload = await build_usage_payload()
         _cached_body = payload
         _cached_at = now
+        grok = payload["cursor"].get("grok_bot") or {}
         logger.info(
-            "usage refreshed gpt=%s cursor=%s",
+            "usage refreshed gpt=%s cursor=%s grok=%s",
             payload["gpt"].get("status"),
             payload["cursor"].get("status"),
+            "yes" if grok.get("available") else "no",
         )
         return JSONResponse(payload)

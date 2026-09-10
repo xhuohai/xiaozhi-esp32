@@ -41,11 +41,13 @@ LV_IMAGE_DECLARE(ui_img_battery_charging);
 static const char *TAG = "DataUpdate";
 
 void CustomLcdDisplay::StartDataUpdateTask() {
-    // 暂时停用板载和风天气 API 配置，改为由 MCP 工具写入天气缓存
-    // WeatherManager::getInstance().setApiConfig(
-    //     WEATHER_API_KEY,
-    //     WEATHER_API_HOST
-    // );
+    WeatherManager::getInstance().setApiConfig(
+        WEATHER_API_KEY,
+        WEATHER_API_HOST
+    );
+#ifdef WEATHER_CITY
+    WeatherManager::getInstance().setCity(WEATHER_CITY);
+#endif
     
     AiUsageManager::GetInstance().Init();
 
@@ -57,6 +59,8 @@ void CustomLcdDisplay::StartDataUpdateTask() {
 void CustomLcdDisplay::DataUpdateTask(void *arg) {
     CustomLcdDisplay *self = (CustomLcdDisplay *)arg;
     bool time_synced = false;
+    uint32_t last_weather_update = 0;
+    bool last_weather_success = false;
     
     // NTP 指数退避重试参数
     int ntp_retry_count = 0;
@@ -65,6 +69,9 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
     uint32_t ntp_last_sync_ms = 0;            // 上次 NTP 同步成功的时间（用于 24 小时校准）
     const uint32_t NTP_RESYNC_INTERVAL = 24 * 60 * 60 * 1000;  // 24 小时（毫秒）
     
+    // 天气更新间隔
+    const uint32_t WEATHER_NORMAL_INTERVAL = 10 * 60 * 1000;   // 成功后 10 分钟
+    const uint32_t WEATHER_RETRY_INTERVAL = 5 * 60 * 1000;     // 失败后 5 分钟重试
     // 电池电量变化很慢，降频采样可显著减轻 ADC 和 UI 刷新压力
     const uint32_t BATTERY_POLL_INTERVAL = 10 * 1000;           // 每 10 秒采样一次
     uint32_t last_battery_poll_ms = 0;
@@ -117,10 +124,14 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
         
         // ===== NTP 时间同步 =====
         // 仅在连续 idle 足够久后同步，避免与 AI 对话抢网络/内存
-        if (network_connected && idle_long_enough) {
+        // 双击手动刷新时跳过 idle 等待，但仍避开语音会话
+        const bool manual_ntp = self->force_ntp_sync_.load();
+        if (network_connected && (idle_long_enough || (manual_ntp && !in_audio_session))) {
             bool should_sync = false;
             
-            if (!time_synced && ntp_retry_count < NTP_MAX_RETRIES) {
+            if (manual_ntp && !in_audio_session) {
+                should_sync = true;
+            } else if (!time_synced && ntp_retry_count < NTP_MAX_RETRIES) {
                 // 首次同步：未同步且未超过最大重试次数
                 should_sync = true;
             } else if (time_synced && ntp_last_sync_ms > 0 && 
@@ -132,14 +143,18 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
             
             if (should_sync) {
                 ESP_LOGI(TAG, "同步 NTP 时间 (第 %d 次)...", ntp_retry_count + 1);
-                SensorManager::getInstance().syncNtpTime();
+                bool ntp_ok = SensorManager::getInstance().syncNtpTime();
+                if (manual_ntp) {
+                    self->force_ntp_sync_.store(false);
+                    self->last_min_ = -1;
+                }
                 
                 // 检查时间是否合理（年份 > 2024 说明同步成功了）
                 time_t now_check;
                 struct tm check_info;
                 time(&now_check);
                 localtime_r(&now_check, &check_info);
-                if (check_info.tm_year + 1900 >= 2024) {
+                if (ntp_ok && check_info.tm_year + 1900 >= 2024) {
                     time_synced = true;
                     ntp_retry_count = 0;           // 重置重试计数
                     ntp_retry_delay_ms = 1000;     // 重置退避延迟
@@ -149,7 +164,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     ESP_LOGI(TAG, "NTP 同步成功: %04d-%02d-%02d %02d:%02d",
                              check_info.tm_year + 1900, check_info.tm_mon + 1, check_info.tm_mday,
                              check_info.tm_hour, check_info.tm_min);
-                } else {
+                } else if (!manual_ntp) {
                     ntp_retry_count++;
                     ESP_LOGW(TAG, "NTP 同步失败（年份=%d），第 %d/%d 次，%d 秒后重试", 
                              check_info.tm_year + 1900, ntp_retry_count, NTP_MAX_RETRIES,
@@ -167,7 +182,36 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
         }
         
         // ===== 天气更新 =====
-        // 暂时停用板载和风天气自动拉取，天气由 AI 通过 MCP 主动写入
+        // 双击手动刷新时跳过 idle 等待，但仍避开语音会话；不开麦、不走 WakeWordInvoke
+        {
+            auto& weather = WeatherManager::getInstance();
+            const bool manual_weather = self->force_weather_sync_.load();
+            if (!weather.isConfigured()) {
+                if (manual_weather) {
+                    ESP_LOGW(TAG, "双击刷新跳过天气：secret_config.h 未填写和风 Key/Host");
+                    self->last_weather_result_.store(3);
+                    self->force_weather_sync_.store(false);
+                }
+            } else if (network_connected &&
+                       (idle_long_enough || (manual_weather && !in_audio_session))) {
+                uint32_t weather_interval =
+                    last_weather_success ? WEATHER_NORMAL_INTERVAL : WEATHER_RETRY_INTERVAL;
+                const bool due = (last_weather_update == 0 ||
+                                  (now_ms - last_weather_update > weather_interval));
+                if ((manual_weather && !in_audio_session) || due) {
+                    last_weather_success = weather.update();
+                    last_weather_update = now_ms;
+                    if (manual_weather) {
+                        self->last_weather_result_.store(last_weather_success ? 1 : 2);
+                        self->force_weather_sync_.store(false);
+                    }
+                    if (!last_weather_success) {
+                        ESP_LOGW(TAG, "天气更新失败，%d 分钟后重试",
+                                 (int)(WEATHER_RETRY_INTERVAL / 60000));
+                    }
+                }
+            }
+        }
         
         // ===== 时间获取（在锁外也需要用，所以先获取）=====
         time_t now;
@@ -492,6 +536,48 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
         // ===== AI Usage UI 刷新（只读缓存，不在此任务发网络请求）=====
         if (self->IsAiUsageMode()) {
             self->UpdateAiUsageDisplay(false);
+        }
+
+        // 双击刷新结束后收回「正在刷新」文案，避免一直停在那句话上
+        {
+            uint32_t after_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            if (self->manual_refresh_pending_.load()) {
+                auto& usage = AiUsageManager::GetInstance();
+                const bool usage_done = !usage.IsRefreshing() &&
+                    usage.Revision() > self->manual_refresh_watch_revision_;
+                const bool ntp_done = !self->force_ntp_sync_.load();
+                const bool weather_done = !self->force_weather_sync_.load();
+                const bool timed_out =
+                    after_ms >= self->manual_refresh_started_ms_ &&
+                    (after_ms - self->manual_refresh_started_ms_) > 20000;
+                if ((usage_done && ntp_done && weather_done) || timed_out) {
+                    self->manual_refresh_pending_.store(false);
+                    if (ds == kDeviceStateIdle) {
+                        const int weather_result = self->last_weather_result_.load();
+                        const char* msg = "时间与额度已更新";
+                        if (timed_out && !usage_done) {
+                            msg = "刷新超时，请检查 proxy";
+                        } else if (!usage.LastFetchOk()) {
+                            msg = "额度刷新失败，已保留上次数据";
+                        } else if (weather_result == 3) {
+                            msg = "时间与额度已更新；天气未配置和风 Key";
+                        } else if (weather_result == 2) {
+                            msg = "时间与额度已更新，天气刷新失败";
+                        } else if (weather_result == 1) {
+                            msg = "时间、额度与天气已更新";
+                        }
+                        self->SetChatMessage("system", msg);
+                        self->manual_refresh_clear_at_ms_ = after_ms + 4000;
+                    }
+                }
+            }
+            if (self->manual_refresh_clear_at_ms_ != 0 &&
+                after_ms >= self->manual_refresh_clear_at_ms_ &&
+                !self->showing_system_info_ &&
+                ds == kDeviceStateIdle) {
+                self->manual_refresh_clear_at_ms_ = 0;
+                self->SetChatMessage("system", "AI 待命");
+            }
         }
 
         // ===== 番茄钟 UI 刷新 =====

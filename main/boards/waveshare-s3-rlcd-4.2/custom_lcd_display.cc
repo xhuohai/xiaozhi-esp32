@@ -540,3 +540,18 @@ void CustomLcdDisplay::NotifyUserActivity() {
         ESP_LOGI(TAG, "用户活动检测到，退出省电模式");
     }
 }
+
+void CustomLcdDisplay::RequestManualRefresh() {
+    last_min_ = -1;
+    force_ntp_sync_.store(true);
+    force_weather_sync_.store(true);
+    last_weather_result_.store(0);
+    auto& usage = AiUsageManager::GetInstance();
+    manual_refresh_watch_revision_ = usage.Revision();
+    manual_refresh_started_ms_ = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    manual_refresh_clear_at_ms_ = 0;
+    manual_refresh_pending_.store(true);
+    usage.RequestRefresh(true);
+    SetChatMessage("system", "正在刷新时间、额度与天气...");
+    ESP_LOGI("CustomLcdDisplay", "manual refresh queued");
+}

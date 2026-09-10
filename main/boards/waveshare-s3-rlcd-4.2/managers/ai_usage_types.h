@@ -42,6 +42,10 @@ struct CursorUsage {
     float total_used_percent = 0.0f;
     float api_used_percent = 0.0f;
 
+    bool grok_available = false;
+    float grok_used_percent = 0.0f;
+    time_t grok_reset_at = 0;
+
     bool on_demand_enabled = false;
     float on_demand_used = 0.0f;
 

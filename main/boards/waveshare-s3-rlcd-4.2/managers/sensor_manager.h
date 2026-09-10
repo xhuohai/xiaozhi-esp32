@@ -29,8 +29,8 @@ public:
     void getRtcTime(struct tm *timeinfo);
     void setRtcTime(struct tm *timeinfo);
     
-    // NTP 网络时间同步（需要网络连接）
-    void syncNtpTime();
+    // NTP 网络时间同步（需要网络连接）。成功返回 true。
+    bool syncNtpTime();
 
 private:
     SensorManager();

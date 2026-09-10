@@ -11,25 +11,24 @@ struct WeatherData {
     bool valid = false;
 };
 
-// 天气管理器：通过和风天气 API 获取天气数据
-// 流程：IP 定位城市 → 获取实时天气
+// 天气管理器：国内 IP 库取城市和坐标 → 和风实时天气
+// 不依赖 GeoAPI。和风 Geo 在部分 Key 的安全限制下会返回 403。
 class WeatherManager {
 public:
     static WeatherManager& getInstance();
-    
+
     // 更新天气数据（包含定位+天气请求，耗时较长，应在后台任务中调用）
-    // 返回 true 表示更新成功，false 表示失败（网络错误等）
     bool update();
-    
-    // 获取最新天气数据（线程安全，直接读取缓存）
-    // 即使网络断开，也能返回上次成功获取的数据
+
     WeatherData getLatestData() { return latest_data_; }
 
-    // 设置 API 密钥和主机（从配置中读取）
     void setApiConfig(const char* key, const char* host);
 
-    // 通过外部工具（如 MCP）直接写入天气数据
-    // 适用于不走板载 HTTP 天气接口，而由 AI 侧先查好天气再下发到设备
+    // 可选：填写城市名则跳过 IP 定位；空或 "auto" 则按公网 IP 自动定位
+    void setCity(const char* city);
+
+    bool isConfigured() const;
+
     bool updateFromExternal(const std::string& city,
                             const std::string& weather_text,
                             const std::string& temperature,
@@ -38,11 +37,15 @@ public:
 private:
     WeatherManager();
     WeatherData latest_data_;
-    
-    // API 配置
+
     std::string api_key_;
     std::string api_host_;
-    
+    std::string city_;
+
     static esp_err_t http_event_handler(esp_http_client_event_t *evt);
+    bool httpGet(const char* url, const char* host_header, int timeout_ms, bool request_gzip, int* status_out);
+    const char* payloadJson();
+    bool hasFixedCity() const;
+    bool locateByIp(std::string* city, double* lat, double* lon, bool* has_coord);
     void parseWeatherJson(const char* json_data);
 };

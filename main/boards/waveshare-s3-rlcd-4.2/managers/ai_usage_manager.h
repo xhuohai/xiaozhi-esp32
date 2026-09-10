@@ -27,10 +27,12 @@ public:
 
     bool HasFreshCache(uint32_t max_age_s = 60) const;
 
+    bool LastFetchOk() const { return last_fetch_ok_.load(); }
+
 private:
     static constexpr EventBits_t kBitRefresh = BIT0;
     static constexpr EventBits_t kBitForce = BIT1;
-    static constexpr uint32_t kAutoRefreshMs = 5 * 60 * 1000;
+    static constexpr uint32_t kAutoRefreshMs = 30 * 60 * 1000;
     static constexpr uint32_t kFreshCacheS = 60;
 
     AiUsageManager() = default;
@@ -38,7 +40,7 @@ private:
     static void RefreshTaskEntry(void* arg);
     void RefreshTask();
     void MaybeFetch(bool force);
-    bool FetchUsage(AiUsageSnapshot& snapshot);
+    bool FetchUsage(AiUsageSnapshot& snapshot, bool force);
     bool ParseUsageJson(const char* json, AiUsageSnapshot& snapshot);
     void StoreSnapshot(const AiUsageSnapshot& snapshot);
     void BumpRevision();
@@ -50,6 +52,7 @@ private:
     AiUsageSnapshot snapshot_{};
     std::atomic<bool> initialized_{false};
     std::atomic<bool> refreshing_{false};
+    std::atomic<bool> last_fetch_ok_{false};
     std::atomic<uint32_t> revision_{0};
     time_t last_attempt_at_ = 0;
 };

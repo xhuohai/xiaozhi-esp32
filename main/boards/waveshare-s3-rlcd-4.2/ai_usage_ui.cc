@@ -84,13 +84,13 @@ static float ClampPercent(float percent, bool limit_reached) {
 static void StyleUsageBar(lv_obj_t* bar) {
     lv_bar_set_range(bar, 0, 1000);
     lv_bar_set_value(bar, 0, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(bar, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(bar, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(bar, 1, 0);
-    lv_obj_set_style_border_color(bar, lv_color_white(), 0);
+    lv_obj_set_style_border_color(bar, lv_color_black(), 0);
     lv_obj_set_style_radius(bar, 4, 0);
     lv_obj_set_style_pad_all(bar, 1, 0);
-    lv_obj_set_style_bg_color(bar, lv_color_white(), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(bar, lv_color_black(), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
 }
@@ -145,7 +145,7 @@ void CustomLcdDisplay::SetupAiUsageUI() {
     ai_usage_page_ = lv_obj_create(root);
     lv_obj_set_size(ai_usage_page_, SCR_W, SCR_H);
     lv_obj_set_pos(ai_usage_page_, 0, 0);
-    lv_obj_set_style_bg_color(ai_usage_page_, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(ai_usage_page_, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(ai_usage_page_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(ai_usage_page_, 0, 0);
     lv_obj_set_style_pad_all(ai_usage_page_, 0, 0);
@@ -157,25 +157,25 @@ void CustomLcdDisplay::SetupAiUsageUI() {
 
     ai_usage_title_label_ = lv_label_create(page);
     lv_obj_set_style_text_font(ai_usage_title_label_, font_title, 0);
-    lv_obj_set_style_text_color(ai_usage_title_label_, lv_color_white(), 0);
+    lv_obj_set_style_text_color(ai_usage_title_label_, lv_color_black(), 0);
     lv_obj_align(ai_usage_title_label_, LV_ALIGN_TOP_LEFT, PAD, 8);
     lv_label_set_text(ai_usage_title_label_, "AI Usage");
 
     ai_usage_refresh_label_ = lv_label_create(page);
     lv_obj_set_style_text_font(ai_usage_refresh_label_, font_body, 0);
-    lv_obj_set_style_text_color(ai_usage_refresh_label_, lv_color_white(), 0);
+    lv_obj_set_style_text_color(ai_usage_refresh_label_, lv_color_black(), 0);
     lv_obj_align(ai_usage_refresh_label_, LV_ALIGN_TOP_RIGHT, -PAD, 12);
     lv_label_set_text(ai_usage_refresh_label_, "");
 
     ai_usage_gpt_name_label_ = lv_label_create(page);
     lv_obj_set_style_text_font(ai_usage_gpt_name_label_, font_body, 0);
-    lv_obj_set_style_text_color(ai_usage_gpt_name_label_, lv_color_white(), 0);
+    lv_obj_set_style_text_color(ai_usage_gpt_name_label_, lv_color_black(), 0);
     lv_obj_align(ai_usage_gpt_name_label_, LV_ALIGN_TOP_LEFT, PAD, 42);
     lv_label_set_text(ai_usage_gpt_name_label_, "GPT");
 
     ai_usage_gpt_plan_label_ = lv_label_create(page);
     lv_obj_set_style_text_font(ai_usage_gpt_plan_label_, font_body, 0);
-    lv_obj_set_style_text_color(ai_usage_gpt_plan_label_, lv_color_white(), 0);
+    lv_obj_set_style_text_color(ai_usage_gpt_plan_label_, lv_color_black(), 0);
     lv_obj_align(ai_usage_gpt_plan_label_, LV_ALIGN_TOP_RIGHT, -PAD, 42);
     lv_label_set_text(ai_usage_gpt_plan_label_, "");
 
@@ -190,7 +190,7 @@ void CustomLcdDisplay::SetupAiUsageUI() {
     for (int i = 0; i < 2; ++i) {
         ai_usage_gpt_w_id_[i] = lv_label_create(page);
         lv_obj_set_style_text_font(ai_usage_gpt_w_id_[i], font_body, 0);
-        lv_obj_set_style_text_color(ai_usage_gpt_w_id_[i], lv_color_white(), 0);
+        lv_obj_set_style_text_color(ai_usage_gpt_w_id_[i], lv_color_black(), 0);
         lv_obj_set_pos(ai_usage_gpt_w_id_[i], PAD, gpt_ys[i]);
         lv_label_set_text(ai_usage_gpt_w_id_[i], gpt_ids[i]);
 
@@ -201,13 +201,13 @@ void CustomLcdDisplay::SetupAiUsageUI() {
 
         ai_usage_gpt_w_pct_[i] = lv_label_create(page);
         lv_obj_set_style_text_font(ai_usage_gpt_w_pct_[i], font_body, 0);
-        lv_obj_set_style_text_color(ai_usage_gpt_w_pct_[i], lv_color_white(), 0);
+        lv_obj_set_style_text_color(ai_usage_gpt_w_pct_[i], lv_color_black(), 0);
         lv_obj_set_pos(ai_usage_gpt_w_pct_[i], pct_x, gpt_ys[i]);
         lv_label_set_text(ai_usage_gpt_w_pct_[i], "--%");
 
         ai_usage_gpt_w_reset_[i] = lv_label_create(page);
         lv_obj_set_style_text_font(ai_usage_gpt_w_reset_[i], font_body, 0);
-        lv_obj_set_style_text_color(ai_usage_gpt_w_reset_[i], lv_color_white(), 0);
+        lv_obj_set_style_text_color(ai_usage_gpt_w_reset_[i], lv_color_black(), 0);
         lv_obj_set_style_text_opa(ai_usage_gpt_w_reset_[i], LV_OPA_70, 0);
         lv_obj_set_pos(ai_usage_gpt_w_reset_[i], bar_x, gpt_ys[i] + 18);
         lv_label_set_text(ai_usage_gpt_w_reset_[i], "Reset --");
@@ -216,7 +216,7 @@ void CustomLcdDisplay::SetupAiUsageUI() {
     lv_obj_t* divider = lv_obj_create(page);
     lv_obj_set_size(divider, SCR_W - PAD * 2, 1);
     lv_obj_set_pos(divider, PAD, 150);
-    lv_obj_set_style_bg_color(divider, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(divider, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(divider, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(divider, 0, 0);
     lv_obj_set_style_radius(divider, 0, 0);
@@ -224,62 +224,90 @@ void CustomLcdDisplay::SetupAiUsageUI() {
 
     ai_usage_cursor_name_label_ = lv_label_create(page);
     lv_obj_set_style_text_font(ai_usage_cursor_name_label_, font_body, 0);
-    lv_obj_set_style_text_color(ai_usage_cursor_name_label_, lv_color_white(), 0);
-    lv_obj_align(ai_usage_cursor_name_label_, LV_ALIGN_TOP_LEFT, PAD, 160);
+    lv_obj_set_style_text_color(ai_usage_cursor_name_label_, lv_color_black(), 0);
+    lv_obj_align(ai_usage_cursor_name_label_, LV_ALIGN_TOP_LEFT, PAD, 156);
     lv_label_set_text(ai_usage_cursor_name_label_, "Cursor");
 
     ai_usage_cursor_plan_label_ = lv_label_create(page);
     lv_obj_set_style_text_font(ai_usage_cursor_plan_label_, font_body, 0);
-    lv_obj_set_style_text_color(ai_usage_cursor_plan_label_, lv_color_white(), 0);
-    lv_obj_align(ai_usage_cursor_plan_label_, LV_ALIGN_TOP_RIGHT, -PAD, 160);
+    lv_obj_set_style_text_color(ai_usage_cursor_plan_label_, lv_color_black(), 0);
+    lv_obj_align(ai_usage_cursor_plan_label_, LV_ALIGN_TOP_RIGHT, -PAD, 156);
     lv_label_set_text(ai_usage_cursor_plan_label_, "");
 
     ai_usage_cursor_total_id_ = lv_label_create(page);
     lv_obj_set_style_text_font(ai_usage_cursor_total_id_, font_body, 0);
-    lv_obj_set_style_text_color(ai_usage_cursor_total_id_, lv_color_white(), 0);
-    lv_obj_set_pos(ai_usage_cursor_total_id_, PAD, 186);
+    lv_obj_set_style_text_color(ai_usage_cursor_total_id_, lv_color_black(), 0);
+    lv_obj_set_pos(ai_usage_cursor_total_id_, PAD, 176);
     lv_label_set_text(ai_usage_cursor_total_id_, "Total");
 
     ai_usage_cursor_total_bar_ = lv_bar_create(page);
     lv_obj_set_size(ai_usage_cursor_total_bar_, bar_w, 14);
-    lv_obj_set_pos(ai_usage_cursor_total_bar_, bar_x, 188);
+    lv_obj_set_pos(ai_usage_cursor_total_bar_, bar_x, 178);
     StyleUsageBar(ai_usage_cursor_total_bar_);
 
     ai_usage_cursor_total_pct_ = lv_label_create(page);
     lv_obj_set_style_text_font(ai_usage_cursor_total_pct_, font_body, 0);
-    lv_obj_set_style_text_color(ai_usage_cursor_total_pct_, lv_color_white(), 0);
-    lv_obj_set_pos(ai_usage_cursor_total_pct_, pct_x, 186);
+    lv_obj_set_style_text_color(ai_usage_cursor_total_pct_, lv_color_black(), 0);
+    lv_obj_set_pos(ai_usage_cursor_total_pct_, pct_x, 176);
     lv_label_set_text(ai_usage_cursor_total_pct_, "--%");
 
     ai_usage_cursor_api_id_ = lv_label_create(page);
     lv_obj_set_style_text_font(ai_usage_cursor_api_id_, font_body, 0);
-    lv_obj_set_style_text_color(ai_usage_cursor_api_id_, lv_color_white(), 0);
-    lv_obj_set_pos(ai_usage_cursor_api_id_, PAD, 214);
+    lv_obj_set_style_text_color(ai_usage_cursor_api_id_, lv_color_black(), 0);
+    lv_obj_set_pos(ai_usage_cursor_api_id_, PAD, 198);
     lv_label_set_text(ai_usage_cursor_api_id_, "API");
 
     ai_usage_cursor_api_bar_ = lv_bar_create(page);
     lv_obj_set_size(ai_usage_cursor_api_bar_, bar_w, 14);
-    lv_obj_set_pos(ai_usage_cursor_api_bar_, bar_x, 216);
+    lv_obj_set_pos(ai_usage_cursor_api_bar_, bar_x, 200);
     StyleUsageBar(ai_usage_cursor_api_bar_);
 
     ai_usage_cursor_api_pct_ = lv_label_create(page);
     lv_obj_set_style_text_font(ai_usage_cursor_api_pct_, font_body, 0);
-    lv_obj_set_style_text_color(ai_usage_cursor_api_pct_, lv_color_white(), 0);
-    lv_obj_set_pos(ai_usage_cursor_api_pct_, pct_x, 214);
+    lv_obj_set_style_text_color(ai_usage_cursor_api_pct_, lv_color_black(), 0);
+    lv_obj_set_pos(ai_usage_cursor_api_pct_, pct_x, 198);
     lv_label_set_text(ai_usage_cursor_api_pct_, "--%");
 
     ai_usage_cursor_reset_label_ = lv_label_create(page);
     lv_obj_set_style_text_font(ai_usage_cursor_reset_label_, font_body, 0);
-    lv_obj_set_style_text_color(ai_usage_cursor_reset_label_, lv_color_white(), 0);
+    lv_obj_set_style_text_color(ai_usage_cursor_reset_label_, lv_color_black(), 0);
     lv_obj_set_style_text_opa(ai_usage_cursor_reset_label_, LV_OPA_70, 0);
-    lv_obj_set_pos(ai_usage_cursor_reset_label_, bar_x, 234);
+    lv_obj_set_pos(ai_usage_cursor_reset_label_, bar_x, 216);
     lv_label_set_text(ai_usage_cursor_reset_label_, "Reset --");
+
+    ai_usage_cursor_grok_id_ = lv_label_create(page);
+    lv_obj_set_style_text_font(ai_usage_cursor_grok_id_, font_body, 0);
+    lv_obj_set_style_text_color(ai_usage_cursor_grok_id_, lv_color_black(), 0);
+    lv_obj_set_pos(ai_usage_cursor_grok_id_, PAD, 238);
+    lv_label_set_text(ai_usage_cursor_grok_id_, "Grok");
+    lv_obj_add_flag(ai_usage_cursor_grok_id_, LV_OBJ_FLAG_HIDDEN);
+
+    ai_usage_cursor_grok_bar_ = lv_bar_create(page);
+    lv_obj_set_size(ai_usage_cursor_grok_bar_, bar_w, 14);
+    lv_obj_set_pos(ai_usage_cursor_grok_bar_, bar_x, 240);
+    StyleUsageBar(ai_usage_cursor_grok_bar_);
+    lv_obj_add_flag(ai_usage_cursor_grok_bar_, LV_OBJ_FLAG_HIDDEN);
+
+    ai_usage_cursor_grok_pct_ = lv_label_create(page);
+    lv_obj_set_style_text_font(ai_usage_cursor_grok_pct_, font_body, 0);
+    lv_obj_set_style_text_color(ai_usage_cursor_grok_pct_, lv_color_black(), 0);
+    lv_obj_set_pos(ai_usage_cursor_grok_pct_, pct_x, 238);
+    lv_label_set_text(ai_usage_cursor_grok_pct_, "--%");
+    lv_obj_add_flag(ai_usage_cursor_grok_pct_, LV_OBJ_FLAG_HIDDEN);
+
+    ai_usage_cursor_grok_reset_ = lv_label_create(page);
+    lv_obj_set_style_text_font(ai_usage_cursor_grok_reset_, font_body, 0);
+    lv_obj_set_style_text_color(ai_usage_cursor_grok_reset_, lv_color_black(), 0);
+    lv_obj_set_style_text_opa(ai_usage_cursor_grok_reset_, LV_OPA_70, 0);
+    lv_obj_set_pos(ai_usage_cursor_grok_reset_, bar_x, 256);
+    lv_label_set_text(ai_usage_cursor_grok_reset_, "Reset --");
+    lv_obj_add_flag(ai_usage_cursor_grok_reset_, LV_OBJ_FLAG_HIDDEN);
 
     ai_usage_cursor_ondemand_label_ = lv_label_create(page);
     lv_obj_set_style_text_font(ai_usage_cursor_ondemand_label_, font_body, 0);
-    lv_obj_set_style_text_color(ai_usage_cursor_ondemand_label_, lv_color_white(), 0);
+    lv_obj_set_style_text_color(ai_usage_cursor_ondemand_label_, lv_color_black(), 0);
     lv_obj_set_style_text_opa(ai_usage_cursor_ondemand_label_, LV_OPA_70, 0);
-    lv_obj_set_pos(ai_usage_cursor_ondemand_label_, PAD, 258);
+    lv_obj_set_pos(ai_usage_cursor_ondemand_label_, PAD, 276);
     lv_label_set_text(ai_usage_cursor_ondemand_label_, "");
     lv_obj_add_flag(ai_usage_cursor_ondemand_label_, LV_OBJ_FLAG_HIDDEN);
 
@@ -338,7 +366,7 @@ void CustomLcdDisplay::UpdateAiUsageDisplay(bool force) {
         if (!show) {
             continue;
         }
-        char id_buf[8];
+        char id_buf[16];
         snprintf(id_buf, sizeof(id_buf), "%s", gpt_rows[i]->id);
         for (char* p = id_buf; *p; ++p) {
             if (*p >= 'a' && *p <= 'z') {
@@ -385,6 +413,12 @@ void CustomLcdDisplay::UpdateAiUsageDisplay(bool force) {
     SetHidden(ai_usage_cursor_api_pct_, !cursor_has_data);
     SetHidden(ai_usage_cursor_reset_label_, !cursor_has_data);
 
+    const bool show_grok = cursor_has_data && snap.cursor.grok_available;
+    SetHidden(ai_usage_cursor_grok_id_, !show_grok);
+    SetHidden(ai_usage_cursor_grok_bar_, !show_grok);
+    SetHidden(ai_usage_cursor_grok_pct_, !show_grok);
+    SetHidden(ai_usage_cursor_grok_reset_, !show_grok);
+
     if (cursor_has_data) {
         SetBarPercent(ai_usage_cursor_total_bar_, ai_usage_cursor_total_pct_,
                       snap.cursor.total_used_percent, false);
@@ -394,6 +428,15 @@ void CustomLcdDisplay::UpdateAiUsageDisplay(bool force) {
         FormatResetTime(snap.cursor.cycle_end, 86400, reset_buf, sizeof(reset_buf));
         if (ai_usage_cursor_reset_label_) {
             lv_label_set_text(ai_usage_cursor_reset_label_, reset_buf);
+        }
+        if (show_grok) {
+            SetBarPercent(ai_usage_cursor_grok_bar_, ai_usage_cursor_grok_pct_,
+                          snap.cursor.grok_used_percent, false);
+            char grok_reset[32];
+            FormatResetTime(snap.cursor.grok_reset_at, 604800, grok_reset, sizeof(grok_reset));
+            if (ai_usage_cursor_grok_reset_) {
+                lv_label_set_text(ai_usage_cursor_grok_reset_, grok_reset);
+            }
         }
     }
 

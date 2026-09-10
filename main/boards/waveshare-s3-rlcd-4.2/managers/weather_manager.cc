@@ -2,20 +2,20 @@
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "cJSON.h"
 #include "zlib.h"
 #include <string.h>
+#include <stdlib.h>
 #include <algorithm>
 #include <cctype>
 
 static const char *TAG = "WeatherManager";
 
-// HTTP 响应缓冲区（分配在 SPIRAM 上，避免占用宝贵的内部 RAM）
 static char* response_buffer = NULL;
 static int response_len = 0;
 static const int RESPONSE_BUFFER_SIZE = 8192;
 
-// GZIP 解压缓冲区（和风天气 API 默认返回 gzip 压缩数据）
 static char* decompressed_buffer = NULL;
 static const int DECOMPRESSED_BUFFER_SIZE = 8192;
 
@@ -44,8 +44,33 @@ WeatherManager& WeatherManager::getInstance() {
 }
 
 void WeatherManager::setApiConfig(const char* key, const char* host) {
-    api_key_ = key;
-    api_host_ = host;
+    api_key_ = key ? key : "";
+    api_host_ = host ? host : "";
+}
+
+void WeatherManager::setCity(const char* city) {
+    city_ = city ? city : "";
+}
+
+bool WeatherManager::isConfigured() const {
+    if (api_key_.empty() || api_host_.empty()) {
+        return false;
+    }
+    if (api_key_.find("your_") != std::string::npos ||
+        api_host_.find("your_") != std::string::npos) {
+        return false;
+    }
+    return true;
+}
+
+bool WeatherManager::hasFixedCity() const {
+    if (city_.empty()) {
+        return false;
+    }
+    std::string normalized = city_;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    return normalized != "auto" && city_.find("your_") == std::string::npos;
 }
 
 bool WeatherManager::updateFromExternal(const std::string& city,
@@ -70,7 +95,6 @@ bool WeatherManager::updateFromExternal(const std::string& city,
     return true;
 }
 
-// GZIP 安全解压（和风天气 API 返回 gzip 格式）
 static bool decompress_gzip_safe(const uint8_t* src, int src_len, char* dst, int dst_max_len, int* out_len) {
     if (src_len < 18 || src[0] != 0x1f || src[1] != 0x8b) return false;
     z_stream strm = {};
@@ -87,160 +111,239 @@ static bool decompress_gzip_safe(const uint8_t* src, int src_len, char* dst, int
     return true;
 }
 
-// 判断城市名是否可用于 UI 展示（排除 "Ip" 这类占位值）
-static bool is_valid_display_city(const char* city) {
-    if (city == nullptr || city[0] == '\0') {
-        return false;
-    }
-    std::string normalized(city);
-    normalized.erase(std::remove_if(normalized.begin(), normalized.end(), ::isspace), normalized.end());
-    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-                   [](unsigned char c) { return (char)std::tolower(c); });
-    return normalized != "ip" && normalized != "auto_ip" && normalized != "unknown";
-}
-
-// 优先使用更像“真实地名”的字段，避免把 "Ip" 显示到页面上
-static std::string pick_city_name_for_display(cJSON* first_city, const std::string& fallback_city) {
-    const char* keys[] = {"adm2", "adm1", "name"};
-    for (const char* key : keys) {
-        cJSON* item = cJSON_GetObjectItem(first_city, key);
-        if (item && cJSON_IsString(item) && is_valid_display_city(item->valuestring)) {
-            return item->valuestring;
+static void url_encode(const char* src, char* dst, size_t dst_size) {
+    static const char hex[] = "0123456789ABCDEF";
+    size_t j = 0;
+    for (size_t i = 0; src[i] != '\0' && j + 4 < dst_size; ++i) {
+        unsigned char c = (unsigned char)src[i];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+            dst[j++] = static_cast<char>(c);
+        } else {
+            dst[j++] = '%';
+            dst[j++] = hex[c >> 4];
+            dst[j++] = hex[c & 0x0F];
         }
     }
-    return fallback_city;
+    dst[j] = '\0';
+}
+
+bool WeatherManager::httpGet(const char* url, const char* host_header, int timeout_ms,
+                             bool request_gzip, int* status_out) {
+    response_len = 0;
+    if (response_buffer) {
+        memset(response_buffer, 0, RESPONSE_BUFFER_SIZE);
+    }
+
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.event_handler = http_event_handler;
+    config.timeout_ms = timeout_ms;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        return false;
+    }
+    if (host_header && host_header[0] != '\0') {
+        esp_http_client_set_header(client, "Host", host_header);
+    }
+    esp_http_client_set_header(client, "User-Agent", "ESP32-Weather-Station");
+    if (request_gzip) {
+        esp_http_client_set_header(client, "Accept-Encoding", "gzip");
+    }
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    if (status_out) {
+        *status_out = status;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "HTTP GET 失败 err=%s status=%d url=%.80s",
+                 esp_err_to_name(err), status, url);
+    }
+    esp_http_client_cleanup(client);
+    return err == ESP_OK;
+}
+
+const char* WeatherManager::payloadJson() {
+    int d_len = 0;
+    if (decompressed_buffer &&
+        decompress_gzip_safe((uint8_t*)response_buffer, response_len,
+                             decompressed_buffer, DECOMPRESSED_BUFFER_SIZE, &d_len)) {
+        return decompressed_buffer;
+    }
+    if (response_len > 0 && response_buffer) {
+        response_buffer[response_len] = '\0';
+        return response_buffer;
+    }
+    return nullptr;
+}
+
+static std::string normalize_cn_city(std::string name) {
+    const char* suffixes[] = {
+        "特别行政区", "维吾尔自治区", "壮族自治区", "回族自治区", "自治区", "省", "市"
+    };
+    for (const char* suffix : suffixes) {
+        const size_t suffix_len = strlen(suffix);
+        if (name.size() > suffix_len &&
+            name.compare(name.size() - suffix_len, suffix_len, suffix) == 0) {
+            name.erase(name.size() - suffix_len);
+            break;
+        }
+    }
+    return name;
+}
+
+static bool parse_ip_location(const char* json, std::string* city, double* lat, double* lon, bool* has_coord) {
+    cJSON* root = json ? cJSON_Parse(json) : nullptr;
+    if (!root) {
+        return false;
+    }
+
+    bool ok = false;
+    *has_coord = false;
+    cJSON* data = cJSON_GetObjectItem(root, "data");
+
+    cJSON* location = data ? cJSON_GetObjectItem(data, "location") : nullptr;
+    if (location && cJSON_IsArray(location) && cJSON_GetArraySize(location) >= 2) {
+        cJSON* city_item = cJSON_GetArraySize(location) >= 3 ? cJSON_GetArrayItem(location, 2) : nullptr;
+        cJSON* province_item = cJSON_GetArrayItem(location, 1);
+        const char* raw = nullptr;
+        if (city_item && cJSON_IsString(city_item) && city_item->valuestring[0] != '\0') {
+            raw = city_item->valuestring;
+        } else if (province_item && cJSON_IsString(province_item) && province_item->valuestring[0] != '\0') {
+            raw = province_item->valuestring;
+        }
+        if (raw) {
+            *city = normalize_cn_city(raw);
+            ok = !city->empty();
+        }
+    }
+
+    if (data) {
+        cJSON* city_item = cJSON_GetObjectItem(data, "city");
+        cJSON* prov_item = cJSON_GetObjectItem(data, "prov");
+        if (!ok) {
+            const char* raw = nullptr;
+            if (city_item && cJSON_IsString(city_item) && city_item->valuestring[0] != '\0') {
+                raw = city_item->valuestring;
+            } else if (prov_item && cJSON_IsString(prov_item) && prov_item->valuestring[0] != '\0') {
+                raw = prov_item->valuestring;
+            }
+            if (raw) {
+                *city = normalize_cn_city(raw);
+                ok = !city->empty();
+            }
+        }
+        cJSON* lat_item = cJSON_GetObjectItem(data, "lat");
+        cJSON* lon_item = cJSON_GetObjectItem(data, "lng");
+        if (!lon_item) {
+            lon_item = cJSON_GetObjectItem(data, "lon");
+        }
+        if (lat_item && lon_item && cJSON_IsString(lat_item) && cJSON_IsString(lon_item) &&
+            lat_item->valuestring[0] != '\0' && lon_item->valuestring[0] != '\0') {
+            *lat = atof(lat_item->valuestring);
+            *lon = atof(lon_item->valuestring);
+            *has_coord = (*lat != 0.0 || *lon != 0.0);
+        } else if (lat_item && lon_item && cJSON_IsNumber(lat_item) && cJSON_IsNumber(lon_item)) {
+            *lat = lat_item->valuedouble;
+            *lon = lon_item->valuedouble;
+            *has_coord = (*lat != 0.0 || *lon != 0.0);
+        }
+    }
+
+    cJSON_Delete(root);
+    return ok;
+}
+
+bool WeatherManager::locateByIp(std::string* city, double* lat, double* lon, bool* has_coord) {
+    const char* apis[] = {
+        "http://ip9.com.cn/get",
+        "https://ip9.com.cn/get",
+        "http://myip.ipip.net/json",
+        "https://myip.ipip.net/json",
+    };
+
+    for (const char* url : apis) {
+        int status = 0;
+        if (!httpGet(url, nullptr, 8000, false, &status) || status != 200) {
+            ESP_LOGW(TAG, "IP 定位请求失败 status=%d url=%s", status, url);
+            continue;
+        }
+        const char* json = payloadJson();
+        if (parse_ip_location(json, city, lat, lon, has_coord)) {
+            ESP_LOGI(TAG, "IP 定位成功: %s coord=%s (%.2f, %.2f) url=%s",
+                     city->c_str(), *has_coord ? "yes" : "no", *lon, *lat, url);
+            return true;
+        }
+        ESP_LOGW(TAG, "IP 定位响应无法解析 url=%s body=%.120s",
+                 url, json ? json : "");
+    }
+    return false;
 }
 
 bool WeatherManager::update() {
-    if (!response_buffer || api_key_.empty() || api_host_.empty()) {
-        ESP_LOGW(TAG, "天气 API 未配置或缓冲区未分配");
+    if (!response_buffer) {
+        ESP_LOGW(TAG, "天气缓冲区未分配");
+        return false;
+    }
+    if (!isConfigured()) {
+        ESP_LOGW(TAG, "天气 API 未配置（请在 secret_config.h 填写和风 Key 与 Host）");
         return false;
     }
 
-    // 第一步：通过和风天气 GeoAPI 进行 IP 定位
-    response_len = 0;
-    memset(response_buffer, 0, RESPONSE_BUFFER_SIZE);
-    char geo_url[256];
-    // 使用 auto_ip 让服务端按公网出口 IP 识别城市
-    snprintf(geo_url, sizeof(geo_url), "https://%s/geo/v2/city/lookup?location=auto_ip&key=%s",
-             api_host_.c_str(), api_key_.c_str());
+    std::string display_city;
+    double lat = 0, lon = 0;
+    bool has_coord = false;
 
-    ESP_LOGI(TAG, "正在进行 IP 定位...");
-    esp_http_client_config_t geo_config = {};
-    geo_config.url = geo_url;
-    geo_config.event_handler = http_event_handler;
-    geo_config.timeout_ms = 8000;
-    geo_config.crt_bundle_attach = esp_crt_bundle_attach;
-    
-    esp_http_client_handle_t geo_client = esp_http_client_init(&geo_config);
-    esp_http_client_set_header(geo_client, "Host", api_host_.c_str());
-    esp_err_t geo_err = esp_http_client_perform(geo_client);
-    int geo_status = esp_http_client_get_status_code(geo_client);
-    
-    // 默认位置（苏州）
-    double lat = 31.23, lon = 120.62; 
-    std::string city_name = "苏州";
-
-    if (geo_err == ESP_OK && geo_status == 200 && response_len > 0) {
-        // geo 响应也可能是 gzip 压缩的，先尝试解压
-        const char* geo_json = NULL;
-        int geo_d_len = 0;
-        if (decompressed_buffer &&
-            decompress_gzip_safe((uint8_t*)response_buffer, response_len,
-                                 decompressed_buffer, DECOMPRESSED_BUFFER_SIZE, &geo_d_len)) {
-            geo_json = decompressed_buffer;
-            ESP_LOGI(TAG, "IP 定位响应已 gzip 解压 (%d -> %d bytes)", response_len, geo_d_len);
-        } else {
-            response_buffer[response_len] = '\0';
-            geo_json = response_buffer;
-        }
-        cJSON *root = cJSON_Parse(geo_json);
-        if (root) {
-            cJSON *code = cJSON_GetObjectItem(root, "code");
-            if (code && cJSON_IsString(code) && strcmp(code->valuestring, "200") == 0) {
-                cJSON *location_array = cJSON_GetObjectItem(root, "location");
-                if (location_array && cJSON_GetArraySize(location_array) > 0) {
-                    cJSON *first_city = cJSON_GetArrayItem(location_array, 0);
-                    cJSON *lat_item = cJSON_GetObjectItem(first_city, "lat");
-                    cJSON *lon_item = cJSON_GetObjectItem(first_city, "lon");
-                    if (lat_item && lon_item &&
-                        cJSON_IsString(lat_item) && cJSON_IsString(lon_item)) {
-                        lat = atof(lat_item->valuestring);
-                        lon = atof(lon_item->valuestring);
-                        city_name = pick_city_name_for_display(first_city, city_name);
-                        ESP_LOGI(TAG, "定位成功: %s (%.2f, %.2f)", city_name.c_str(), lat, lon);
-                    } else {
-                        ESP_LOGW(TAG, "定位响应缺少必要字段（lat/lon），使用默认城市");
-                    }
-                }
-            } else {
-                const char *api_code = (code && cJSON_IsString(code)) ? code->valuestring : "null";
-                ESP_LOGW(TAG, "IP 定位接口返回 code=%s，使用默认城市", api_code);
-            }
-            cJSON_Delete(root);
-        } else {
-            // 打印响应前 80 字节帮助诊断（可能是 HTML 网关页、乱码等）
-            ESP_LOGW(TAG, "IP 定位响应 JSON 解析失败 (len=%d, head=%.80s)，使用默认城市",
-                     response_len, geo_json);
-        }
-    } else {
-        // 打印失败细节，便于区分网络错误 / HTTP 错误 / 参数错误
-        if (response_len > 0) {
-            response_buffer[response_len] = '\0';
-            ESP_LOGW(TAG, "IP 定位请求失败 (err=%d, status=%d, body=%.120s)，使用默认城市",
-                     geo_err, geo_status, response_buffer);
-        } else {
-            ESP_LOGW(TAG, "IP 定位请求失败 (err=%d, status=%d, empty body)，使用默认城市",
-                     geo_err, geo_status);
-        }
+    if (hasFixedCity()) {
+        display_city = city_;
+        ESP_LOGI(TAG, "使用配置城市: %s", display_city.c_str());
+    } else if (!locateByIp(&display_city, &lat, &lon, &has_coord)) {
+        ESP_LOGW(TAG, "公网 IP 定位失败");
+        return false;
     }
-    esp_http_client_cleanup(geo_client);
 
-    // 第二步：获取实时天气数据
-    response_len = 0;
-    memset(response_buffer, 0, RESPONSE_BUFFER_SIZE);
     char weather_url[512];
-    snprintf(weather_url, sizeof(weather_url), 
-             "https://%s/v7/weather/now?location=%.2f,%.2f&key=%s&lang=zh", 
-             api_host_.c_str(), lon, lat, api_key_.c_str());
-
-    ESP_LOGI(TAG, "获取天气数据...");
-    esp_http_client_config_t weather_config = {};
-    weather_config.url = weather_url;
-    weather_config.event_handler = http_event_handler;
-    weather_config.timeout_ms = 15000;
-    weather_config.crt_bundle_attach = esp_crt_bundle_attach;
-    esp_http_client_handle_t client = esp_http_client_init(&weather_config);
-    
-    esp_http_client_set_header(client, "Host", api_host_.c_str());
-    esp_http_client_set_header(client, "User-Agent", "ESP32-Weather-Station");
-    esp_http_client_set_header(client, "Accept-Encoding", "gzip");
-    
-    esp_err_t err = esp_http_client_perform(client);
-    int status_code = esp_http_client_get_status_code(client);
-    bool success = false;
-
-    if (err == ESP_OK && status_code == 200 && response_len > 0) {
-        int d_len = 0;
-        const char* final_json = NULL;
-        if (decompress_gzip_safe((uint8_t*)response_buffer, response_len, 
-                                  decompressed_buffer, DECOMPRESSED_BUFFER_SIZE, &d_len)) {
-            final_json = decompressed_buffer;
-        } else {
-            response_buffer[response_len] = '\0';
-            final_json = response_buffer;
-        }
-
-        if (final_json) {
-            parseWeatherJson(final_json);
-            latest_data_.city = city_name;
-            success = latest_data_.valid;
-        }
+    if (has_coord) {
+        snprintf(weather_url, sizeof(weather_url),
+                 "https://%s/v7/weather/now?location=%.2f%%2C%.2f&key=%s&lang=zh",
+                 api_host_.c_str(), lon, lat, api_key_.c_str());
+    } else if (!display_city.empty()) {
+        char encoded_city[96];
+        url_encode(display_city.c_str(), encoded_city, sizeof(encoded_city));
+        snprintf(weather_url, sizeof(weather_url),
+                 "https://%s/v7/weather/now?location=%s&key=%s&lang=zh",
+                 api_host_.c_str(), encoded_city, api_key_.c_str());
     } else {
-        ESP_LOGE(TAG, "天气请求失败 (err=%d, status=%d)", err, status_code);
+        ESP_LOGW(TAG, "没有可用的天气位置");
+        return false;
     }
-    esp_http_client_cleanup(client);
-    return success;
+
+    ESP_LOGI(TAG, "获取天气数据 city=%s coord=%s (%.2f, %.2f)",
+             display_city.c_str(), has_coord ? "yes" : "no", lon, lat);
+    int status_code = 0;
+    if (!httpGet(weather_url, api_host_.c_str(), 15000, true, &status_code) || status_code != 200) {
+        ESP_LOGE(TAG, "天气请求失败 status=%d", status_code);
+        return false;
+    }
+
+    const char* final_json = payloadJson();
+    if (!final_json) {
+        ESP_LOGE(TAG, "天气响应为空");
+        return false;
+    }
+
+    latest_data_.valid = false;
+    parseWeatherJson(final_json);
+    if (!latest_data_.valid) {
+        return false;
+    }
+    if (!display_city.empty()) {
+        latest_data_.city = display_city;
+    }
+    return true;
 }
 
 void WeatherManager::parseWeatherJson(const char* json_data) {

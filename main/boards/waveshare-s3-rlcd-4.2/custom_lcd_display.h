@@ -110,6 +110,10 @@ private:
     lv_obj_t *ai_usage_cursor_api_id_ = nullptr;
     lv_obj_t *ai_usage_cursor_api_bar_ = nullptr;
     lv_obj_t *ai_usage_cursor_api_pct_ = nullptr;
+    lv_obj_t *ai_usage_cursor_grok_id_ = nullptr;
+    lv_obj_t *ai_usage_cursor_grok_bar_ = nullptr;
+    lv_obj_t *ai_usage_cursor_grok_pct_ = nullptr;
+    lv_obj_t *ai_usage_cursor_grok_reset_ = nullptr;
     lv_obj_t *ai_usage_cursor_reset_label_ = nullptr;
     lv_obj_t *ai_usage_cursor_ondemand_label_ = nullptr;
     uint32_t last_ai_usage_revision_ = 0;
@@ -128,6 +132,15 @@ private:
     
     // 系统信息滚动标志（为 true 时暂停 DataUpdateTask 更新，避免锁竞争）
     std::atomic<bool> showing_system_info_{false};
+
+    std::atomic<bool> force_ntp_sync_{false};
+    std::atomic<bool> force_weather_sync_{false};
+    // 0=未完成 1=成功 2=失败 3=未配置和风 Key
+    std::atomic<int> last_weather_result_{0};
+    std::atomic<bool> manual_refresh_pending_{false};
+    uint32_t manual_refresh_watch_revision_ = 0;
+    uint32_t manual_refresh_started_ms_ = 0;
+    uint32_t manual_refresh_clear_at_ms_ = 0;
     
     // 省电模式：5 分钟无活动后降低刷新频率（1秒 → 5秒）
     std::atomic<bool> power_saving_{false};     // 是否处于省电模式
@@ -201,6 +214,7 @@ public:
     void RefreshMemoDisplay();           // 自动获取锁（外部调用用这个）
     void RefreshMemoDisplayInternal();   // 不获取锁（已持锁时用这个，避免死锁）
     void CycleDisplayMode();
+    void RequestManualRefresh();
     bool IsMusicMode() const { return display_mode_ == MODE_MUSIC; }
     bool IsPomodoroMode() const { return display_mode_ == MODE_POMODORO; }
     bool IsAiUsageMode() const { return display_mode_ == MODE_AI_USAGE; }

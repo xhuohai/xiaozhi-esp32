@@ -39,7 +39,7 @@
 - **SD 卡**（SDMMC 接口，FAT32 格式）
   - CLK → GPIO38, CMD → GPIO21, D0 → GPIO39
   - 挂载点：`/sdcard`
-  - 用途：白噪音 MP3 文件存放
+  - 用途：番茄钟白噪音 MP3。不插卡不影响天气、AI Usage、联网播歌；只是白噪音不可用。
 
 ### 电源
 - **锂电池接口** + **USB-C 充电**
@@ -65,7 +65,7 @@
 | 操作 | 功能 | 说明 |
 |---|---|---|
 | **单击** | 切换屏幕模式 | 天气 → 音乐 → 番茄钟 → AI Usage |
-| **双击** | 刷新所有数据 | 手动更新 NTP 时间、AI Usage（天气仍走 MCP） |
+| **双击** | 刷新时间、额度、天气 | 后台同步 NTP、强制刷新 AI Usage，并由板载和风接口拉天气。**不会开麦**。对话中途双击不会打断语音，天气会等会话结束后再拉。需要在 `secret_config.h` 填写真实和风 Key。 |
 | **长按 2 秒** | 显示系统信息 | 在 AI 对话区循环滚动显示：<br>• CPU 频率 (240MHz)<br>• 运行时间<br>• SRAM 使用情况（已用/总量 百分比）<br>• PSRAM 使用情况（已用/总量 百分比）<br>• 电池电量和充电状态<br>• WiFi 连接状态<br>**注：** 长文本会自动循环滚动（2秒一屏），AI 对话时恢复正常换行 |
 
 ---
@@ -107,7 +107,7 @@
 
 ### AI Usage 页面
 
-同一屏显示 GPT / Codex Plus 和 Cursor 额度。设备只请求本地 `usage-proxy`，不保存 Cursor / ChatGPT 登录凭据。
+同一屏显示 GPT / Codex Plus 和 Cursor 额度（含网页上的 Grok Bot 周额度，没有则隐藏）。设备只请求 `usage-proxy`，不保存 Cursor / ChatGPT 登录凭据。
 
 ```
 ┌──────────────────────────────────────────┐
@@ -123,6 +123,8 @@
 │ Total  ████░░░░░░░                 21%  │
 │ API    ██░░░░░░░░░                 11%  │
 │        Reset Sep 29 15:56                │
+│ Grok   ████░░░░░░░                 40%  │
+│        Reset Sep 17 11:11                │
 └──────────────────────────────────────────┘
 ```
 
@@ -161,6 +163,11 @@
 #### `self.disp.network`
 **功能：** 重新进入配网模式  
 **用法：** 用户说"重新配网"、"换个 WiFi"
+
+#### `self.disp.switch`
+**功能：** 切换屏幕页面  
+**参数：** `mode` = `toggle` / `weather` / `music` / `pomodoro` / `ai_usage`  
+**用法：** 用户说"打开额度页"、"看一下用量"、"打开 AI Usage"、"切到番茄钟"
 
 ---
 
@@ -359,7 +366,7 @@ AI：  调用 self.system.info 获取数据
 
 ```cpp
 #define AI_USAGE_API_URL \
-    "http://192.168.1.10:8765/api/v1/ai-usage"
+    "http://38.49.54.174:8765/api/v1/ai-usage"
 #define AI_USAGE_API_TOKEN \
     "replace-with-device-token"
 ```
@@ -370,10 +377,19 @@ AI：  调用 self.system.info 获取数据
 
 ## 天气数据
 
-### MCP 回写模式（当前默认）
-- **数据来源：** AI 侧外部天气 MCP（例如高德天气工具等）
-- **设备侧行为：** 不主动请求和风 API，只接收 AI 调用 `self.weather.update` 写入的数据
-- **显示内容：** 城市名称、天气状况、实时温度
+双击 USER 和定时刷新走**板载和风 HTTP**，不开麦克风。对 AI 说「更新天气」仍可走 MCP 回写。
+
+### 板载和风（双击 / 每 10 分钟）
+- 在 `secret_config.h` 填写 `WEATHER_API_KEY` 和 `WEATHER_API_HOST`（申请：https://dev.qweather.com/）
+- `WEATHER_CITY` 默认 `auto`：用国内 IP 库取城市和坐标，再拉和风实时天气。不走 GeoAPI（部分 Key 开了安全限制会 403）。
+- 若 IP 归属地不准，把 `WEATHER_CITY` 改成城市名（如 `上海`）即可固定
+- 未填写 Key 时屏幕会停在 `-- --°C`
+- 流程：公网 IP 取城市和坐标 → 拉实时天气 → 刷新日历卡片
+
+### 语音 MCP 回写（可选）
+- **数据来源：** AI 侧外部天气工具（例如高德天气等）
+- **设备侧行为：** 接收 AI 调用 `self.weather.update` 写入的数据
+- 双击不会走这条路径。对 AI 说话才会触发 MCP 回写
 
 ### 设备天气工具
 
@@ -396,8 +412,12 @@ AI：  调用 self.system.info 获取数据
 ## 编译和烧录
 
 ### 环境要求
-- **ESP-IDF：** v5.5.1 或 v5.5.2
+- **ESP-IDF：** v5.5.1 或 v5.5.2（命令行 `idf.py` 即可，不必配 Arduino / PlatformIO）
 - **Python：** 3.8+
+- **目标芯片：** ESP32-S3
+- **板型：** `idf.py menuconfig` → Xiaozhi Assistant → Board Type → **Waveshare ESP32-S3-RLCD-4.2**
+
+VS Code 的 Espressif IDF 插件可选，和命令行是同一套工具链。新增的 `managers/*.cc`、`ai_usage_ui.cc` 会被 CMake 自动收进去，不用改 `CMakeLists.txt`。
 
 ### 快速启动（本机实测可用）
 
@@ -433,8 +453,10 @@ cd xiaozhi-esp32
 # 2. 加载 ESP-IDF 环境（路径按你的安装位置修改）
 source <your-esp-idf-path>/export.sh
 
-# 3. 首次配置（可选）
+# 3. 首次必须选对板子和芯片
+idf.py set-target esp32s3
 idf.py menuconfig
+# Xiaozhi Assistant → Board Type → Waveshare ESP32-S3-RLCD-4.2
 
 # 4. 编译 / 烧录
 idf.py build
