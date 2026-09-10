@@ -64,8 +64,8 @@
 
 | 操作 | 功能 | 说明 |
 |---|---|---|
-| **单击** | 切换屏幕模式 | 循环切换显示布局（功能开发中）|
-| **双击** | 刷新所有数据 | 手动更新天气、NTP 时间、传感器数据 |
+| **单击** | 切换屏幕模式 | 天气 → 音乐 → 番茄钟 → AI Usage |
+| **双击** | 刷新所有数据 | 手动更新 NTP 时间、AI Usage（天气仍走 MCP） |
 | **长按 2 秒** | 显示系统信息 | 在 AI 对话区循环滚动显示：<br>• CPU 频率 (240MHz)<br>• 运行时间<br>• SRAM 使用情况（已用/总量 百分比）<br>• PSRAM 使用情况（已用/总量 百分比）<br>• 电池电量和充电状态<br>• WiFi 连接状态<br>**注：** 长文本会自动循环滚动（2秒一屏），AI 对话时恢复正常换行 |
 
 ---
@@ -104,6 +104,29 @@
 │  😊 待命  │  说「开始番茄钟」启动         │  ← AI 状态卡
 └──────────────────────────────────────────┘
 ```
+
+### AI Usage 页面
+
+同一屏显示 GPT / Codex Plus 和 Cursor 额度。设备只请求本地 `usage-proxy`，不保存 Cursor / ChatGPT 登录凭据。
+
+```
+┌──────────────────────────────────────────┐
+│ AI Usage                               * │
+│                                          │
+│ GPT                                 Plus │
+│ 5H     ███████░░░░                 42%  │
+│        Reset 16:11                       │
+│ 7D     ████░░░░░░░                 27%  │
+│        Reset Sep 17 11:11                │
+│ ──────────────────────────────────────── │
+│ Cursor                          Pro Plus │
+│ Total  ████░░░░░░░                 21%  │
+│ API    ██░░░░░░░░░                 11%  │
+│        Reset Sep 29 15:56                │
+└──────────────────────────────────────────┘
+```
+
+启动 proxy 和填写 `secret_config.h` 的步骤见 `tools/usage-proxy/README.md`。
 
 ### 布局说明
 
@@ -325,6 +348,23 @@ AI：  调用 self.system.info 获取数据
 - 跨平台兼容性好
 
 **注意：** BluFi 和热点配网不能同时启用，在 `idf.py menuconfig` 中选择一种。
+
+---
+
+## AI Usage 配置
+
+1. 在电脑上启动 `tools/usage-proxy`（见该目录 README）。
+2. 复制 `secret_config.h.example` 为 `secret_config.h`。
+3. 填写局域网 proxy 地址和 `DEVICE_TOKEN`：
+
+```cpp
+#define AI_USAGE_API_URL \
+    "http://192.168.1.10:8765/api/v1/ai-usage"
+#define AI_USAGE_API_TOKEN \
+    "replace-with-device-token"
+```
+
+不要把 Cursor session token 或 Codex access token 写进固件。proxy 不可达时设备仍能启动，页面会显示 Unavailable。
 
 ---
 
