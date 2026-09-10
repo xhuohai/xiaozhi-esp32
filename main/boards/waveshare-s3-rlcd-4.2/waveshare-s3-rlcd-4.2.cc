@@ -24,6 +24,7 @@
 LV_FONT_DECLARE(font_puhui_14_1);
 LV_FONT_DECLARE(font_puhui_16_4);
 #include "managers/weather_manager.h"
+#include "managers/ai_usage_manager.h"
 
 #define TAG "waveshare_rlcd_4_2"
 
@@ -108,12 +109,12 @@ private:
             if (display_) {
                 display_->CycleDisplayMode();
             }
-            ESP_LOGI(TAG, "USER 按钮单击：切换天气页/音乐页");
+            ESP_LOGI(TAG, "USER 按钮单击：切换天气/音乐/番茄钟/AI Usage");
         });
 
         user_button_.OnDoubleClick([this]() {
             if (display_) display_->NotifyUserActivity();  // 记录用户活动
-            // 双击：刷新所有数据（天气、传感器、时间）
+            // 双击：刷新天气、时间、AI Usage
             RefreshAllData();
         });
 
@@ -245,10 +246,13 @@ private:
         
         // 重新同步 NTP 时间
         SensorManager::getInstance().syncNtpTime();
+
+        // AI Usage 走后台任务，避免在按键回调里发 HTTP
+        AiUsageManager::GetInstance().RequestRefresh(true);
         
         // 强制刷新屏幕显示
         if (display_) {
-            display_->SetChatMessage("system", "正在刷新数据...\n时间已更新，天气等待 MCP 同步");
+            display_->SetChatMessage("system", "正在刷新数据...\n时间已更新，AI Usage 后台刷新中");
         }
         
         ESP_LOGI(TAG, "数据刷新完成");
@@ -349,10 +353,10 @@ private:
         // ===== 屏幕切换工具（语音可调用）=====
         mcp_server.AddTool(
             "self.disp.switch",
-            "Switch display page between weather, music, and pomodoro.\n"
-            "Use when user says: '切到音乐页', '打开天气页', '切换屏幕', '打开番茄钟页面', 'switch screen'.\n"
+            "Switch display page between weather, music, pomodoro, and AI usage.\n"
+            "Use when user says: '切到音乐页', '打开天气页', '切换屏幕', '打开番茄钟页面', '打开额度页', 'switch screen'.\n"
             "Args:\n"
-            "  `mode`: 'toggle' | 'music' | 'weather' | 'pomodoro' (default: 'toggle')",
+            "  `mode`: 'toggle' | 'music' | 'weather' | 'pomodoro' | 'ai_usage' (default: 'toggle')",
             PropertyList({
                 Property("mode", kPropertyTypeString, std::string("toggle"))
             }),
@@ -380,12 +384,15 @@ private:
                     display_->SwitchToWeatherPage();
                 } else if (mode == "pomodoro") {
                     display_->SwitchToPomodoroPage();
+                } else if (mode == "ai_usage" || mode == "usage") {
+                    display_->SwitchToAiUsagePage();
                 } else {
-                    return std::string("参数 mode 无效，请使用 toggle/music/weather/pomodoro");
+                    return std::string("参数 mode 无效，请使用 toggle/music/weather/pomodoro/ai_usage");
                 }
 
                 if (display_->IsMusicMode()) return std::string("已切换到音乐页");
                 if (display_->IsPomodoroMode()) return std::string("已切换到番茄钟页");
+                if (display_->IsAiUsageMode()) return std::string("已切换到 AI Usage 页");
                 return std::string("已切换到天气页");
             }
         );

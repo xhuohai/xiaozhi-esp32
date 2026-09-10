@@ -26,6 +26,7 @@
 #include "managers/sensor_manager.h"
 #include "managers/weather_manager.h"
 #include "managers/pomodoro_manager.h"
+#include "managers/ai_usage_manager.h"
 #include "secret_config.h"
 
 // 声明状态栏图标（DataUpdateTask 需要更新图标）
@@ -46,6 +47,8 @@ void CustomLcdDisplay::StartDataUpdateTask() {
     //     WEATHER_API_HOST
     // );
     
+    AiUsageManager::GetInstance().Init();
+
     // 栈从 16KB 下调到 8KB，给音频/MQTT 留更多 SRAM 余量
     // 优先级保持较低，避免与语音收发实时链路抢占 CPU
     xTaskCreate(DataUpdateTask, "weather_ui_update", 8192, this, 2, &update_task_handle_);
@@ -485,6 +488,11 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 last_ds = ds;
             }
         }  // DisplayLockGuard 自动释放
+
+        // ===== AI Usage UI 刷新（只读缓存，不在此任务发网络请求）=====
+        if (self->IsAiUsageMode()) {
+            self->UpdateAiUsageDisplay(false);
+        }
 
         // ===== 番茄钟 UI 刷新 =====
         // 番茄钟运行时，每秒更新倒计时显示和进度条
