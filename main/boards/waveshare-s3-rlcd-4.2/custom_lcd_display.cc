@@ -29,6 +29,7 @@
 #include "board.h"
 #include "application.h"
 #include "lvgl_theme.h"
+#include "managers/ai_usage_manager.h"
 
 static const char *TAG = "CustomDisplay";
 
@@ -93,11 +94,12 @@ CustomLcdDisplay::CustomLcdDisplay(esp_lcd_panel_io_handle_t panel_io,
         return;
     }
 
-    // 4. 创建天气页 + 音乐页 + 番茄钟页 UI
-    ESP_LOGI(TAG, "创建天气页 + 音乐页 + 番茄钟页 UI");
+    // 4. 创建天气页 + 音乐页 + 番茄钟页 + AI Usage 页 UI
+    ESP_LOGI(TAG, "创建天气页 + 音乐页 + 番茄钟页 + AI Usage 页 UI");
     SetupWeatherUI();
     SetupMusicUI();
     SetupPomodoroUI();
+    SetupAiUsageUI();
     // 告诉显示框架：当前自定义 UI 已经初始化完成
     // 否则基类的 SetStatus/ShowNotification 会一直误判为“UI 未准备好”
     setup_ui_called_ = true;
@@ -353,6 +355,7 @@ void CustomLcdDisplay::ApplyDisplayMode() {
     if (weather_page_) lv_obj_add_flag(weather_page_, LV_OBJ_FLAG_HIDDEN);
     if (music_page_) lv_obj_add_flag(music_page_, LV_OBJ_FLAG_HIDDEN);
     if (pomodoro_page_) lv_obj_add_flag(pomodoro_page_, LV_OBJ_FLAG_HIDDEN);
+    if (ai_usage_page_) lv_obj_add_flag(ai_usage_page_, LV_OBJ_FLAG_HIDDEN);
 
     // 显示当前页面
     switch (display_mode_) {
@@ -365,16 +368,20 @@ void CustomLcdDisplay::ApplyDisplayMode() {
         case MODE_POMODORO:
             if (pomodoro_page_) lv_obj_remove_flag(pomodoro_page_, LV_OBJ_FLAG_HIDDEN);
             break;
+        case MODE_AI_USAGE:
+            if (ai_usage_page_) lv_obj_remove_flag(ai_usage_page_, LV_OBJ_FLAG_HIDDEN);
+            break;
     }
 }
 
 void CustomLcdDisplay::CycleDisplayMode() {
     DisplayLockGuard lock(this);
-    // 三页循环：天气 → 音乐 → 番茄钟 → 天气
+    // 四页循环：天气 → 音乐 → 番茄钟 → AI Usage → 天气
     switch (display_mode_) {
         case MODE_WEATHER:  display_mode_ = MODE_MUSIC; break;
         case MODE_MUSIC:    display_mode_ = MODE_POMODORO; break;
-        case MODE_POMODORO: display_mode_ = MODE_WEATHER; break;
+        case MODE_POMODORO: display_mode_ = MODE_AI_USAGE; break;
+        case MODE_AI_USAGE: display_mode_ = MODE_WEATHER; break;
     }
     ApplyDisplayMode();
     const char* name = "未知";
@@ -382,8 +389,13 @@ void CustomLcdDisplay::CycleDisplayMode() {
         case MODE_WEATHER:  name = "天气页"; break;
         case MODE_MUSIC:    name = "音乐页"; break;
         case MODE_POMODORO: name = "番茄钟"; break;
+        case MODE_AI_USAGE: name = "AI Usage"; break;
     }
     ESP_LOGI(TAG, "页面切换: %s", name);
+    if (display_mode_ == MODE_AI_USAGE) {
+        last_ai_usage_revision_ = 0;
+        AiUsageManager::GetInstance().RequestRefresh(false);
+    }
 }
 
 void CustomLcdDisplay::SetMusicInfo(const char* title, const char* artist) {
@@ -489,6 +501,17 @@ void CustomLcdDisplay::SwitchToPomodoroPage() {
         ApplyDisplayMode();
         ESP_LOGI(TAG, "自动切换到番茄钟页");
     }
+}
+
+void CustomLcdDisplay::SwitchToAiUsagePage() {
+    DisplayLockGuard lock(this);
+    if (display_mode_ != MODE_AI_USAGE) {
+        display_mode_ = MODE_AI_USAGE;
+        ApplyDisplayMode();
+        last_ai_usage_revision_ = 0;
+        ESP_LOGI(TAG, "自动切换到 AI Usage 页");
+    }
+    AiUsageManager::GetInstance().RequestRefresh(false);
 }
 
 void CustomLcdDisplay::UpdatePomodoroDisplay(const char* state_text, const char* countdown_text,

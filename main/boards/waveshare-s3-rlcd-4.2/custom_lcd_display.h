@@ -26,6 +26,7 @@
 //   weather_ui.cc          - 天气站 UI 布局（SetupWeatherUI）
 //   music_ui.cc            - 音乐页 UI 布局（SetupMusicUI）
 //   pomodoro_ui.cc         - 番茄钟 UI 布局（SetupPomodoroUI）
+//   ai_usage_ui.cc         - AI Usage UI 布局（SetupAiUsageUI）
 //   data_update_task.cc    - 后台数据更新任务（时间/天气/传感器/电池/WiFi/AI状态/番茄钟）
 //   custom_lcd_display.cc  - 核心类（构造/析构/AI适配/备忘录/基类重写）
 class CustomLcdDisplay : public LcdDisplay {
@@ -34,6 +35,7 @@ private:
         MODE_WEATHER = 0,
         MODE_MUSIC = 1,
         MODE_POMODORO = 2,
+        MODE_AI_USAGE = 3,
     };
     DisplayMode display_mode_ = MODE_WEATHER;
 
@@ -42,6 +44,7 @@ private:
     lv_obj_t *weather_page_ = nullptr;
     lv_obj_t *music_page_ = nullptr;
     lv_obj_t *pomodoro_page_ = nullptr;
+    lv_obj_t *ai_usage_page_ = nullptr;
 
     // ===== 天气站 UI 组件 =====
     // 状态栏（右上角浮动胶囊）
@@ -90,6 +93,28 @@ private:
     lv_obj_t *pomo_battery_icon_img_ = nullptr;  // 状态栏电池图标
     lv_obj_t *pomo_battery_pct_label_ = nullptr; // 状态栏电量文字
 
+    // ===== AI Usage UI 组件 =====
+    lv_obj_t *ai_usage_title_label_ = nullptr;
+    lv_obj_t *ai_usage_refresh_label_ = nullptr;
+    lv_obj_t *ai_usage_gpt_name_label_ = nullptr;
+    lv_obj_t *ai_usage_gpt_plan_label_ = nullptr;
+    lv_obj_t *ai_usage_gpt_w_id_[2] = {};
+    lv_obj_t *ai_usage_gpt_w_bar_[2] = {};
+    lv_obj_t *ai_usage_gpt_w_pct_[2] = {};
+    lv_obj_t *ai_usage_gpt_w_reset_[2] = {};
+    lv_obj_t *ai_usage_cursor_name_label_ = nullptr;
+    lv_obj_t *ai_usage_cursor_plan_label_ = nullptr;
+    lv_obj_t *ai_usage_cursor_total_id_ = nullptr;
+    lv_obj_t *ai_usage_cursor_total_bar_ = nullptr;
+    lv_obj_t *ai_usage_cursor_total_pct_ = nullptr;
+    lv_obj_t *ai_usage_cursor_api_id_ = nullptr;
+    lv_obj_t *ai_usage_cursor_api_bar_ = nullptr;
+    lv_obj_t *ai_usage_cursor_api_pct_ = nullptr;
+    lv_obj_t *ai_usage_cursor_reset_label_ = nullptr;
+    lv_obj_t *ai_usage_cursor_ondemand_label_ = nullptr;
+    uint32_t last_ai_usage_revision_ = 0;
+    bool last_ai_usage_refreshing_ = false;
+
     // 图片图标（不能用基类的 label，因为我们用 lv_image 而不是 Font Awesome 文字）
     lv_obj_t *wifi_icon_img_ = nullptr;
     lv_obj_t *battery_icon_img_ = nullptr;
@@ -124,7 +149,9 @@ private:
     void SetupWeatherUI();
     void SetupMusicUI();
     void SetupPomodoroUI();
+    void SetupAiUsageUI();
     void ApplyDisplayMode();
+    void UpdateAiUsageDisplay(bool force = false);
     
     // 备忘录
     void LoadMemoFromNvs();   // 从 NVS 加载备忘录到 UI
@@ -176,7 +203,9 @@ public:
     void CycleDisplayMode();
     bool IsMusicMode() const { return display_mode_ == MODE_MUSIC; }
     bool IsPomodoroMode() const { return display_mode_ == MODE_POMODORO; }
+    bool IsAiUsageMode() const { return display_mode_ == MODE_AI_USAGE; }
     void SwitchToPomodoroPage();
+    void SwitchToAiUsagePage();
 
     // 番茄钟 UI 更新方法
     void UpdatePomodoroDisplay(const char* state_text, const char* countdown_text,
