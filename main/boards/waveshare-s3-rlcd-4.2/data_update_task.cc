@@ -8,6 +8,7 @@
 // - 电池状态 / WiFi 图标更新
 // - AI 状态文字更新
 // - 备忘闹钟检查
+// - 每日定时重启（NTP 同步后、空闲时）
 
 #include "custom_lcd_display.h"
 
@@ -18,6 +19,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 
 #include "application.h"
 #include "board.h"
@@ -28,6 +30,13 @@
 #include "managers/pomodoro_manager.h"
 #include "managers/ai_usage_manager.h"
 #include "secret_config.h"
+
+#ifndef DAILY_REBOOT_HOUR
+#define DAILY_REBOOT_HOUR 3
+#endif
+#ifndef DAILY_REBOOT_MINUTE
+#define DAILY_REBOOT_MINUTE 0
+#endif
 
 // 声明状态栏图标（DataUpdateTask 需要更新图标）
 LV_IMAGE_DECLARE(ui_img_wifi);
@@ -84,6 +93,10 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
     
     // 记录进入 idle 的时刻，用于"连续 idle 足够久才发网络请求"的保护
     uint32_t idle_since_ms = 0;
+
+    // 每日定时重启：到点后等空闲；用 yday 保证同一天只臂一次
+    bool daily_reboot_pending = false;
+    int daily_reboot_marked_yday = -1;
     
     // 初始化活动时间（系统启动算一次活动）
     self->last_activity_ms_ = xTaskGetTickCount() * portTICK_PERIOD_MS;
@@ -333,6 +346,37 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                         cJSON_Delete(memo_arr);
                     }
                 }
+            }
+        }
+
+        // ===== 每日定时重启 =====
+        // 必须 NTP 已同步；对话/番茄钟/播歌时等到空闲；开机 2 分钟内不臂，避免 3 点重启后又撞上 3 点窗口
+        if (time_synced && DAILY_REBOOT_HOUR >= 0) {
+            const int64_t uptime_ms = esp_timer_get_time() / 1000;
+            const bool past_boot_guard = (uptime_ms > 2 * 60 * 1000);
+            if (past_boot_guard &&
+                timeinfo.tm_hour == DAILY_REBOOT_HOUR &&
+                timeinfo.tm_min == DAILY_REBOOT_MINUTE &&
+                daily_reboot_marked_yday != timeinfo.tm_yday) {
+                daily_reboot_pending = true;
+                daily_reboot_marked_yday = timeinfo.tm_yday;
+                ESP_LOGI(TAG, "已到定时重启点 %02d:%02d，等待空闲",
+                         DAILY_REBOOT_HOUR, DAILY_REBOOT_MINUTE);
+            }
+
+            const bool pomo_busy =
+                (PomodoroManager::getInstance().getState() != PomodoroManager::IDLE);
+            if (daily_reboot_pending &&
+                ds == kDeviceStateIdle &&
+                !in_audio_session &&
+                !pomo_busy &&
+                !app.IsMusicPlaying()) {
+                daily_reboot_pending = false;
+                ESP_LOGW(TAG, "执行每日定时重启");
+                self->SetChatMessage("system", "定时重启中...");
+                app.Schedule([]() {
+                    Application::GetInstance().Reboot();
+                });
             }
         }
 
