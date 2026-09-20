@@ -42,8 +42,16 @@ private:
     std::string api_host_;
     std::string city_;
 
+    // 上次成功的 IP 定位，失败时仍能继续拉天气，避免整段卡住后一直 -- --°C
+    std::string cached_city_;
+    double cached_lat_ = 0;
+    double cached_lon_ = 0;
+    bool cached_has_coord_ = false;
+    bool has_cached_location_ = false;
+
     static esp_err_t http_event_handler(esp_http_client_event_t *evt);
-    bool httpGet(const char* url, const char* host_header, int timeout_ms, bool request_gzip, int* status_out);
+    bool httpGet(const char* url, const char* host_header, int timeout_ms, bool request_gzip,
+                 int* status_out, bool follow_redirect = true);
     const char* payloadJson();
     bool hasFixedCity() const;
     bool locateByIp(std::string* city, double* lat, double* lon, bool* has_coord);

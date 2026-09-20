@@ -60,9 +60,8 @@ void CustomLcdDisplay::StartDataUpdateTask() {
     
     AiUsageManager::GetInstance().Init();
 
-    // 栈从 16KB 下调到 8KB，给音频/MQTT 留更多 SRAM 余量
-    // 优先级保持较低，避免与语音收发实时链路抢占 CPU
-    xTaskCreate(DataUpdateTask, "weather_ui_update", 8192, this, 2, &update_task_handle_);
+    // HTTPS 拉天气需要比 8KB 更大的栈，太小会把这个任务撑死，时钟和天气一起停
+    xTaskCreate(DataUpdateTask, "weather_ui_update", 12 * 1024, this, 2, &update_task_handle_);
 }
 
 void CustomLcdDisplay::DataUpdateTask(void *arg) {
@@ -189,38 +188,6 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     
                     if (ntp_retry_count >= NTP_MAX_RETRIES) {
                         ESP_LOGE(TAG, "NTP 同步已失败 %d 次，放弃重试（使用 RTC 时间）", NTP_MAX_RETRIES);
-                    }
-                }
-            }
-        }
-        
-        // ===== 天气更新 =====
-        // 双击手动刷新时跳过 idle 等待，但仍避开语音会话；不开麦、不走 WakeWordInvoke
-        {
-            auto& weather = WeatherManager::getInstance();
-            const bool manual_weather = self->force_weather_sync_.load();
-            if (!weather.isConfigured()) {
-                if (manual_weather) {
-                    ESP_LOGW(TAG, "双击刷新跳过天气：secret_config.h 未填写和风 Key/Host");
-                    self->last_weather_result_.store(3);
-                    self->force_weather_sync_.store(false);
-                }
-            } else if (network_connected &&
-                       (idle_long_enough || (manual_weather && !in_audio_session))) {
-                uint32_t weather_interval =
-                    last_weather_success ? WEATHER_NORMAL_INTERVAL : WEATHER_RETRY_INTERVAL;
-                const bool due = (last_weather_update == 0 ||
-                                  (now_ms - last_weather_update > weather_interval));
-                if ((manual_weather && !in_audio_session) || due) {
-                    last_weather_success = weather.update();
-                    last_weather_update = now_ms;
-                    if (manual_weather) {
-                        self->last_weather_result_.store(last_weather_success ? 1 : 2);
-                        self->force_weather_sync_.store(false);
-                    }
-                    if (!last_weather_success) {
-                        ESP_LOGW(TAG, "天气更新失败，%d 分钟后重试",
-                                 (int)(WEATHER_RETRY_INTERVAL / 60000));
                     }
                 }
             }
@@ -690,6 +657,38 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     self->power_saving_ = true;
                     ESP_LOGI(TAG, "⚡ 5 分钟无活动，进入省电模式（刷新间隔 %d 秒 → %d 秒）",
                              self->NORMAL_REFRESH_MS / 1000, self->SAVING_REFRESH_MS / 1000);
+                }
+            }
+        }
+
+        // ===== 天气更新（放在 UI 之后，避免 HTTP 卡住时时钟也不走）=====
+        // 双击手动刷新时跳过 idle 等待，但仍避开语音会话；不开麦、不走 WakeWordInvoke
+        {
+            auto& weather = WeatherManager::getInstance();
+            const bool manual_weather = self->force_weather_sync_.load();
+            if (!weather.isConfigured()) {
+                if (manual_weather) {
+                    ESP_LOGW(TAG, "双击刷新跳过天气：secret_config.h 未填写和风 Key/Host");
+                    self->last_weather_result_.store(3);
+                    self->force_weather_sync_.store(false);
+                }
+            } else if (network_connected &&
+                       (idle_long_enough || (manual_weather && !in_audio_session))) {
+                uint32_t weather_interval =
+                    last_weather_success ? WEATHER_NORMAL_INTERVAL : WEATHER_RETRY_INTERVAL;
+                const bool due = (last_weather_update == 0 ||
+                                  (now_ms - last_weather_update > weather_interval));
+                if ((manual_weather && !in_audio_session) || due) {
+                    last_weather_success = weather.update();
+                    last_weather_update = now_ms;
+                    if (manual_weather) {
+                        self->last_weather_result_.store(last_weather_success ? 1 : 2);
+                        self->force_weather_sync_.store(false);
+                    }
+                    if (!last_weather_success) {
+                        ESP_LOGW(TAG, "天气更新失败，%d 分钟后重试",
+                                 (int)(WEATHER_RETRY_INTERVAL / 60000));
+                    }
                 }
             }
         }
