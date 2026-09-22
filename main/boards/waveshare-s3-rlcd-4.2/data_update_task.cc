@@ -57,11 +57,11 @@ void CustomLcdDisplay::StartDataUpdateTask() {
 #ifdef WEATHER_CITY
     WeatherManager::getInstance().setCity(WEATHER_CITY);
 #endif
+    WeatherManager::getInstance().Init();
     
     AiUsageManager::GetInstance().Init();
 
-    // HTTPS 拉天气需要比 8KB 更大的栈，太小会把这个任务撑死，时钟和天气一起停
-    xTaskCreate(DataUpdateTask, "weather_ui_update", 12 * 1024, this, 2, &update_task_handle_);
+    xTaskCreate(DataUpdateTask, "weather_ui_update", 8 * 1024, this, 2, &update_task_handle_);
 }
 
 void CustomLcdDisplay::DataUpdateTask(void *arg) {
@@ -661,16 +661,17 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
             }
         }
 
-        // ===== 天气更新（放在 UI 之后，避免 HTTP 卡住时时钟也不走）=====
-        // 双击手动刷新时跳过 idle 等待，但仍避开语音会话；不开麦、不走 WakeWordInvoke
+        // ===== 天气更新（只排队，HTTP 在 weather_fetch 任务里跑）=====
         {
             auto& weather = WeatherManager::getInstance();
             const bool manual_weather = self->force_weather_sync_.load();
+            static bool weather_manual_waiting = false;
             if (!weather.isConfigured()) {
                 if (manual_weather) {
                     ESP_LOGW(TAG, "双击刷新跳过天气：secret_config.h 未填写和风 Key/Host");
                     self->last_weather_result_.store(3);
                     self->force_weather_sync_.store(false);
+                    weather_manual_waiting = false;
                 }
             } else if (network_connected &&
                        (idle_long_enough || (manual_weather && !in_audio_session))) {
@@ -678,18 +679,25 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     last_weather_success ? WEATHER_NORMAL_INTERVAL : WEATHER_RETRY_INTERVAL;
                 const bool due = (last_weather_update == 0 ||
                                   (now_ms - last_weather_update > weather_interval));
-                if ((manual_weather && !in_audio_session) || due) {
-                    last_weather_success = weather.update();
+                if (((manual_weather && !in_audio_session) || due) && !weather.IsUpdating()) {
+                    weather.RequestUpdate();
                     last_weather_update = now_ms;
                     if (manual_weather) {
-                        self->last_weather_result_.store(last_weather_success ? 1 : 2);
-                        self->force_weather_sync_.store(false);
-                    }
-                    if (!last_weather_success) {
-                        ESP_LOGW(TAG, "天气更新失败，%d 分钟后重试",
-                                 (int)(WEATHER_RETRY_INTERVAL / 60000));
+                        weather_manual_waiting = true;
                     }
                 }
+            }
+            if (weather_manual_waiting && !weather.IsUpdating()) {
+                weather_manual_waiting = false;
+                last_weather_success = weather.LastFetchOk();
+                self->last_weather_result_.store(last_weather_success ? 1 : 2);
+                self->force_weather_sync_.store(false);
+                if (!last_weather_success) {
+                    ESP_LOGW(TAG, "天气更新失败，%d 分钟后重试",
+                             (int)(WEATHER_RETRY_INTERVAL / 60000));
+                }
+            } else if (!manual_weather && !weather.IsUpdating()) {
+                last_weather_success = weather.LastFetchOk();
             }
         }
         

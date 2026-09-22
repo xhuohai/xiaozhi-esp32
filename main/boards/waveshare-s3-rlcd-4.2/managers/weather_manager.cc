@@ -1,46 +1,91 @@
 #include "weather_manager.h"
-#include "esp_log.h"
-#include "esp_http_client.h"
-#include "esp_crt_bundle.h"
-#include "esp_heap_caps.h"
-#include "cJSON.h"
-#include "zlib.h"
-#include <string.h>
-#include <stdlib.h>
+
 #include <algorithm>
 #include <cctype>
+#include <stdlib.h>
+#include <string.h>
+
+#include <cJSON.h>
+#include <esp_crt_bundle.h>
+#include <esp_heap_caps.h>
+#include <esp_http_client.h>
+#include <esp_log.h>
+#include <zlib.h>
+
+#include "application.h"
+#include "settings.h"
 
 static const char *TAG = "WeatherManager";
 
 static char* response_buffer = NULL;
 static int response_len = 0;
 static const int RESPONSE_BUFFER_SIZE = 8192;
-
 static char* decompressed_buffer = NULL;
 static const int DECOMPRESSED_BUFFER_SIZE = 8192;
 
-esp_err_t WeatherManager::http_event_handler(esp_http_client_event_t *evt) {
-    switch(evt->event_id) {
-        case HTTP_EVENT_ON_DATA:
-            if (response_buffer && response_len + evt->data_len < RESPONSE_BUFFER_SIZE - 1) {
-                memcpy(response_buffer + response_len, evt->data, evt->data_len);
-                response_len += evt->data_len;
-            }
-            break;
-        default:
-            break;
+static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
+    if (evt->event_id == HTTP_EVENT_ON_DATA && response_buffer &&
+        response_len + evt->data_len < RESPONSE_BUFFER_SIZE - 1) {
+        memcpy(response_buffer + response_len, evt->data, evt->data_len);
+        response_len += evt->data_len;
     }
     return ESP_OK;
 }
 
-WeatherManager::WeatherManager() {
-    response_buffer = (char*)heap_caps_malloc(RESPONSE_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
-    decompressed_buffer = (char*)heap_caps_malloc(DECOMPRESSED_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+static bool decompress_gzip_safe(const uint8_t* src, int src_len, char* dst, int dst_max_len, int* out_len) {
+    if (src_len < 18 || src[0] != 0x1f || src[1] != 0x8b) return false;
+    z_stream strm = {};
+    strm.next_in = (Bytef*)src;
+    strm.avail_in = src_len;
+    strm.next_out = (Bytef*)dst;
+    strm.avail_out = dst_max_len - 1;
+    if (inflateInit2(&strm, 15 + 16) != Z_OK) return false;
+    int ret = inflate(&strm, Z_FINISH);
+    inflateEnd(&strm);
+    if (ret != Z_STREAM_END && ret != Z_OK) return false;
+    *out_len = dst_max_len - 1 - strm.avail_out;
+    dst[*out_len] = '\0';
+    return true;
 }
 
 WeatherManager& WeatherManager::getInstance() {
     static WeatherManager instance;
     return instance;
+}
+
+void WeatherManager::Init() {
+    if (initialized_.exchange(true)) {
+        return;
+    }
+    mutex_ = xSemaphoreCreateMutex();
+    events_ = xEventGroupCreate();
+    if (!mutex_ || !events_) {
+        ESP_LOGE(TAG, "同步对象创建失败");
+        return;
+    }
+    response_buffer = (char*)heap_caps_malloc(RESPONSE_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+    decompressed_buffer = (char*)heap_caps_malloc(DECOMPRESSED_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+    LoadCache();
+    xTaskCreate(UpdateTaskEntry, "weather_fetch", 16 * 1024, this, 2, &task_);
+}
+
+void WeatherManager::RequestUpdate() {
+    if (!events_) {
+        return;
+    }
+    pending_.store(true);
+    xEventGroupSetBits(events_, kBitRefresh);
+}
+
+WeatherData WeatherManager::getLatestData() {
+    WeatherData copy;
+    if (!mutex_) {
+        return latest_data_;
+    }
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    copy = latest_data_;
+    xSemaphoreGive(mutex_);
+    return copy;
 }
 
 void WeatherManager::setApiConfig(const char* key, const char* host) {
@@ -73,6 +118,10 @@ bool WeatherManager::hasFixedCity() const {
     return normalized != "auto" && city_.find("your_") == std::string::npos;
 }
 
+void WeatherManager::StoreLatestLocked(const WeatherData& data) {
+    latest_data_ = data;
+}
+
 bool WeatherManager::updateFromExternal(const std::string& city,
                                         const std::string& weather_text,
                                         const std::string& temperature,
@@ -82,89 +131,98 @@ bool WeatherManager::updateFromExternal(const std::string& city,
         return false;
     }
 
-    latest_data_.city = city;
-    latest_data_.text = weather_text;
-    latest_data_.temp = temperature;
-    latest_data_.update_time = update_time.empty() ? "mcp" : update_time;
-    latest_data_.valid = true;
+    WeatherData data;
+    data.city = city;
+    data.text = weather_text;
+    data.temp = temperature;
+    data.update_time = update_time.empty() ? "mcp" : update_time;
+    data.valid = true;
+
+    if (mutex_) {
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        StoreLatestLocked(data);
+        xSemaphoreGive(mutex_);
+    } else {
+        latest_data_ = data;
+    }
+    cached_city_ = city;
+    has_cached_location_ = true;
+    SaveCache();
 
     ESP_LOGI(TAG, "天气已由外部写入: %s %s %s°C",
-             latest_data_.city.c_str(),
-             latest_data_.text.c_str(),
-             latest_data_.temp.c_str());
+             data.city.c_str(), data.text.c_str(), data.temp.c_str());
     return true;
 }
 
-static bool decompress_gzip_safe(const uint8_t* src, int src_len, char* dst, int dst_max_len, int* out_len) {
-    if (src_len < 18 || src[0] != 0x1f || src[1] != 0x8b) return false;
-    z_stream strm = {};
-    strm.next_in = (Bytef*)src;
-    strm.avail_in = src_len;
-    strm.next_out = (Bytef*)dst;
-    strm.avail_out = dst_max_len - 1;
-    if (inflateInit2(&strm, 15 + 16) != Z_OK) return false;
-    int ret = inflate(&strm, Z_FINISH);
-    inflateEnd(&strm);
-    if (ret != Z_STREAM_END && ret != Z_OK) return false;
-    *out_len = dst_max_len - 1 - strm.avail_out;
-    dst[*out_len] = '\0';
-    return true;
+void WeatherManager::LoadCache() {
+    Settings s("weather", false);
+    std::string city = s.GetString("city", "");
+    std::string text = s.GetString("text", "");
+    std::string temp = s.GetString("temp", "");
+    cached_city_ = city;
+    cached_lat_ = s.GetInt("lat100", 0) / 100.0;
+    cached_lon_ = s.GetInt("lon100", 0) / 100.0;
+    cached_has_coord_ = s.GetBool("coord", false);
+    has_cached_location_ = !cached_city_.empty();
+
+    if (!city.empty() && !text.empty() && !temp.empty()) {
+        WeatherData data;
+        data.city = city;
+        data.text = text;
+        data.temp = temp;
+        data.update_time = "nvs";
+        data.valid = true;
+        latest_data_ = data;
+        ESP_LOGI(TAG, "已加载上次天气: %s %s %s°C", city.c_str(), text.c_str(), temp.c_str());
+    }
 }
 
-bool WeatherManager::httpGet(const char* url, const char* host_header, int timeout_ms,
-                             bool request_gzip, int* status_out, bool follow_redirect) {
-    response_len = 0;
-    if (response_buffer) {
-        memset(response_buffer, 0, RESPONSE_BUFFER_SIZE);
+void WeatherManager::SaveCache() {
+    Settings s("weather", true);
+    if (latest_data_.valid) {
+        s.SetString("city", latest_data_.city);
+        s.SetString("text", latest_data_.text);
+        s.SetString("temp", latest_data_.temp);
+    } else if (!cached_city_.empty()) {
+        s.SetString("city", cached_city_);
     }
-
-    esp_http_client_config_t config = {};
-    config.url = url;
-    config.event_handler = http_event_handler;
-    config.timeout_ms = timeout_ms;
-    config.disable_auto_redirect = !follow_redirect;
-    // HTTP 定位接口不要走 TLS；证书包只给 https 用，减少握手卡住的机会
-    if (strncmp(url, "https://", 8) == 0) {
-        config.crt_bundle_attach = esp_crt_bundle_attach;
-    }
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-        return false;
-    }
-    if (host_header && host_header[0] != '\0') {
-        esp_http_client_set_header(client, "Host", host_header);
-    }
-    esp_http_client_set_header(client, "User-Agent", "ESP32-Weather-Station");
-    if (request_gzip) {
-        esp_http_client_set_header(client, "Accept-Encoding", "gzip");
-    }
-
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    if (status_out) {
-        *status_out = status;
-    }
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "HTTP GET 失败 err=%s status=%d url=%.80s",
-                 esp_err_to_name(err), status, url);
-    }
-    esp_http_client_cleanup(client);
-    return err == ESP_OK;
+    s.SetInt("lat100", (int32_t)(cached_lat_ * 100));
+    s.SetInt("lon100", (int32_t)(cached_lon_ * 100));
+    s.SetBool("coord", cached_has_coord_);
 }
 
-const char* WeatherManager::payloadJson() {
-    int d_len = 0;
-    if (decompressed_buffer &&
-        decompress_gzip_safe((uint8_t*)response_buffer, response_len,
-                             decompressed_buffer, DECOMPRESSED_BUFFER_SIZE, &d_len)) {
-        return decompressed_buffer;
+void WeatherManager::UpdateTaskEntry(void* arg) {
+    static_cast<WeatherManager*>(arg)->UpdateTask();
+}
+
+void WeatherManager::UpdateTask() {
+    while (true) {
+        xEventGroupWaitBits(events_, kBitRefresh, pdTRUE, pdFALSE, portMAX_DELAY);
+        if (refreshing_.load()) {
+            continue;
+        }
+
+        auto& app = Application::GetInstance();
+        DeviceState ds = app.GetDeviceState();
+        const bool in_audio_session = (ds == kDeviceStateConnecting ||
+                                       ds == kDeviceStateListening ||
+                                       ds == kDeviceStateSpeaking);
+        if (in_audio_session) {
+            ESP_LOGI(TAG, "对话中，天气刷新延后");
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            RequestUpdate();
+            continue;
+        }
+
+        refreshing_.store(true);
+        bool ok = update();
+        last_fetch_ok_.store(ok);
+        if (ok) {
+            SaveCache();
+        }
+        refreshing_.store(false);
+        pending_.store(false);
     }
-    if (response_len > 0 && response_buffer) {
-        response_buffer[response_len] = '\0';
-        return response_buffer;
-    }
-    return nullptr;
 }
 
 static std::string normalize_cn_city(std::string name) {
@@ -244,8 +302,6 @@ static bool parse_ip_location(const char* json, std::string* city, double* lat, 
     return ok;
 }
 
-// 和风 /v7/weather/now 只接受 LocationID 或 经度,纬度，不接受中文城市名。
-// GeoAPI 在部分 Key 下会 403，所以用国内 IP 库拿到城市名后在这里补近似坐标。
 static bool lookup_cn_city_coord(const std::string& city, double* lat, double* lon) {
     static const struct {
         const char* name;
@@ -279,37 +335,85 @@ static bool lookup_cn_city_coord(const std::string& city, double* lat, double* l
     return false;
 }
 
-bool WeatherManager::locateByIp(std::string* city, double* lat, double* lon, bool* has_coord) {
-    // 只用短超时 HTTP。这些站点的 HTTPS 在设备上会长时间卡住，
-    // 而天气刷新和时钟在同一个任务里，一挂界面就停。
-    // ip9 目前会空响应，每次干等只会拖住界面，不再请求。
-    const char* apis[] = {
-        "http://myip.ipip.net/json",
-    };
-
-    for (const char* url : apis) {
-        int status = 0;
-        if (!httpGet(url, nullptr, 4000, false, &status, false) || status != 200) {
-            ESP_LOGW(TAG, "IP 定位请求失败 status=%d url=%s", status, url);
-            continue;
-        }
-        const char* json = payloadJson();
-        if (parse_ip_location(json, city, lat, lon, has_coord)) {
-            ESP_LOGI(TAG, "IP 定位成功: %s coord=%s (%.2f, %.2f) url=%s",
-                     city->c_str(), *has_coord ? "yes" : "no", *lon, *lat, url);
-            return true;
-        }
-        ESP_LOGW(TAG, "IP 定位响应无法解析 url=%s body=%.120s",
-                 url, json ? json : "");
-    }
-    return false;
-}
-
-bool WeatherManager::update() {
+bool WeatherManager::httpGet(const char* url, const char* host_header, int timeout_ms,
+                             bool request_gzip, std::string* body, int* status_out) {
     if (!response_buffer) {
         ESP_LOGW(TAG, "天气缓冲区未分配");
         return false;
     }
+
+    response_len = 0;
+    memset(response_buffer, 0, RESPONSE_BUFFER_SIZE);
+
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.event_handler = http_event_handler;
+    config.timeout_ms = timeout_ms;
+    if (strncmp(url, "https://", 8) == 0) {
+        config.crt_bundle_attach = esp_crt_bundle_attach;
+    }
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        return false;
+    }
+    if (host_header && host_header[0] != '\0') {
+        esp_http_client_set_header(client, "Host", host_header);
+    }
+    esp_http_client_set_header(client, "User-Agent", "ESP32-Weather-Station");
+    if (request_gzip) {
+        esp_http_client_set_header(client, "Accept-Encoding", "gzip");
+    }
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    if (status_out) {
+        *status_out = status;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "HTTP GET 失败 err=%s status=%d url=%.80s",
+                 esp_err_to_name(err), status, url);
+        esp_http_client_cleanup(client);
+        return false;
+    }
+    esp_http_client_cleanup(client);
+    if (status != 200) {
+        ESP_LOGW(TAG, "HTTP 状态=%d url=%.80s", status, url);
+        return false;
+    }
+
+    int d_len = 0;
+    if (decompressed_buffer &&
+        decompress_gzip_safe((uint8_t*)response_buffer, response_len,
+                             decompressed_buffer, DECOMPRESSED_BUFFER_SIZE, &d_len)) {
+        *body = decompressed_buffer;
+    } else if (response_len > 0) {
+        response_buffer[response_len] = '\0';
+        *body = response_buffer;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool WeatherManager::locateByIp(std::string* city, double* lat, double* lon, bool* has_coord) {
+    const char* url = "http://myip.ipip.net/json";
+    std::string body;
+    int status = 0;
+    if (!httpGet(url, nullptr, 4000, false, &body, &status)) {
+        ESP_LOGW(TAG, "IP 定位请求失败 status=%d", status);
+        return false;
+    }
+    if (parse_ip_location(body.c_str(), city, lat, lon, has_coord)) {
+        ESP_LOGI(TAG, "IP 定位成功: %s coord=%s (%.2f, %.2f)",
+                 city->c_str(), *has_coord ? "yes" : "no", *lon, *lat);
+        return true;
+    }
+    ESP_LOGW(TAG, "IP 定位响应无法解析 body=%.120s", body.c_str());
+    return false;
+}
+
+bool WeatherManager::update() {
     if (!isConfigured()) {
         ESP_LOGW(TAG, "天气 API 未配置（请在 secret_config.h 填写和风 Key 与 Host）");
         return false;
@@ -343,53 +447,56 @@ bool WeatherManager::update() {
         has_coord = lookup_cn_city_coord(display_city, &lat, &lon);
         if (has_coord) {
             ESP_LOGI(TAG, "城市坐标: %s (%.2f, %.2f)", display_city.c_str(), lon, lat);
-            if (!hasFixedCity()) {
-                cached_city_ = display_city;
-                cached_lat_ = lat;
-                cached_lon_ = lon;
-                cached_has_coord_ = true;
-                has_cached_location_ = true;
-            }
+            cached_city_ = display_city;
+            cached_lat_ = lat;
+            cached_lon_ = lon;
+            cached_has_coord_ = true;
+            has_cached_location_ = true;
         }
     }
 
-    char weather_url[512];
-    if (has_coord) {
-        snprintf(weather_url, sizeof(weather_url),
-                 "https://%s/v7/weather/now?location=%.2f%%2C%.2f&key=%s&lang=zh",
-                 api_host_.c_str(), lon, lat, api_key_.c_str());
-    } else {
+    if (!has_coord) {
         ESP_LOGW(TAG, "没有可用的天气坐标 city=%s", display_city.c_str());
         return false;
     }
 
-    ESP_LOGI(TAG, "获取天气数据 city=%s coord=%s (%.2f, %.2f)",
-             display_city.c_str(), has_coord ? "yes" : "no", lon, lat);
+    char weather_url[512];
+    snprintf(weather_url, sizeof(weather_url),
+             "https://%s/v7/weather/now?location=%.2f%%2C%.2f&key=%s&lang=zh",
+             api_host_.c_str(), lon, lat, api_key_.c_str());
+
+    ESP_LOGI(TAG, "获取天气数据 city=%s coord=yes (%.2f, %.2f)",
+             display_city.c_str(), lon, lat);
+    std::string body;
     int status_code = 0;
-    if (!httpGet(weather_url, api_host_.c_str(), 8000, true, &status_code) || status_code != 200) {
+    if (!httpGet(weather_url, api_host_.c_str(), 8000, true, &body, &status_code)) {
         ESP_LOGE(TAG, "天气请求失败 status=%d", status_code);
         return false;
     }
-
-    const char* final_json = payloadJson();
-    if (!final_json) {
+    if (body.empty()) {
         ESP_LOGE(TAG, "天气响应为空");
         return false;
     }
 
-    parseWeatherJson(final_json);
-    if (!latest_data_.valid) {
+    if (!parseWeatherJson(body.c_str())) {
         return false;
     }
     if (!display_city.empty()) {
-        latest_data_.city = display_city;
+        if (mutex_) {
+            xSemaphoreTake(mutex_, portMAX_DELAY);
+            latest_data_.city = display_city;
+            xSemaphoreGive(mutex_);
+        } else {
+            latest_data_.city = display_city;
+        }
     }
     return true;
 }
 
-void WeatherManager::parseWeatherJson(const char* json_data) {
+bool WeatherManager::parseWeatherJson(const char* json_data) {
     cJSON *root = cJSON_Parse(json_data);
-    if (!root) return;
+    if (!root) return false;
+    bool ok = false;
     cJSON *code = cJSON_GetObjectItem(root, "code");
     const char* code_str = (code && cJSON_IsString(code)) ? code->valuestring : nullptr;
     if (code_str && strcmp(code_str, "200") == 0) {
@@ -397,13 +504,23 @@ void WeatherManager::parseWeatherJson(const char* json_data) {
         cJSON *temp = now ? cJSON_GetObjectItem(now, "temp") : nullptr;
         cJSON *text = now ? cJSON_GetObjectItem(now, "text") : nullptr;
         if (temp && temp->valuestring && text && text->valuestring) {
-            latest_data_.temp = temp->valuestring;
-            latest_data_.text = text->valuestring;
-            latest_data_.valid = true;
-            ESP_LOGI(TAG, "天气更新成功: %s°C, %s", latest_data_.temp.c_str(), latest_data_.text.c_str());
+            if (mutex_) {
+                xSemaphoreTake(mutex_, portMAX_DELAY);
+                latest_data_.temp = temp->valuestring;
+                latest_data_.text = text->valuestring;
+                latest_data_.valid = true;
+                xSemaphoreGive(mutex_);
+            } else {
+                latest_data_.temp = temp->valuestring;
+                latest_data_.text = text->valuestring;
+                latest_data_.valid = true;
+            }
+            ESP_LOGI(TAG, "天气更新成功: %s°C, %s", temp->valuestring, text->valuestring);
+            ok = true;
         }
     } else {
         ESP_LOGW(TAG, "天气响应异常 code=%s", code_str ? code_str : "(无)");
     }
     cJSON_Delete(root);
+    return ok;
 }

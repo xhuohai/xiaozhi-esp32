@@ -280,6 +280,7 @@ AI：  调用 self.system.info 获取数据
 |---|---|---|---|
 | `wifi` | `ssid`, `password` | String | WiFi 凭据（由 BluFi/Hotspot 配网写入）|
 | `memo` | `items` | JSON Array | 备忘录列表 |
+| `weather` | `city`, `text`, `temp`, `lat100`, `lon100`, `coord` | String/Int/Bool | 上次成功的天气和位置，重启后先显示再刷新 |
 
 **备忘录 JSON 格式：**
 ```json
@@ -391,7 +392,8 @@ AI：  调用 self.system.info 获取数据
 
 ### 板载和风（双击 / 每 10 分钟）
 - 在 `secret_config.h` 填写 `WEATHER_API_KEY` 和 `WEATHER_API_HOST`（申请：https://dev.qweather.com/）
-- `WEATHER_CITY` 默认 `auto`：用国内 IP 库（仅 HTTP，短超时）取城市名，再补经纬度拉和风实时天气。不走 GeoAPI（部分 Key 开了安全限制会 403）。定位失败时会用上次成功的位置继续拉天气。
+- `WEATHER_CITY` 默认 `auto`：用国内 IP 库（仅 HTTP，短超时）取城市名，再补经纬度拉和风实时天气。不走 GeoAPI（部分 Key 开了安全限制会 403）。
+- 天气请求在独立后台任务里跑，不会挡住时钟。成功结果写入 NVS，重启后先显示上次天气，再后台刷新。
 - 若 IP 归属地不准，把 `WEATHER_CITY` 改成城市名（如 `上海`）即可固定
 - 未填写 Key 时屏幕会停在 `-- --°C`
 - 流程：公网 IP 取城市和坐标 → 拉实时天气 → 刷新日历卡片

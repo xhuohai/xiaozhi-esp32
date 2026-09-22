@@ -1,6 +1,13 @@
 #pragma once
+
+#include <atomic>
 #include <string>
-#include "esp_http_client.h"
+
+#include <esp_bit_defs.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/event_groups.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 
 // 天气数据结构
 struct WeatherData {
@@ -11,16 +18,23 @@ struct WeatherData {
     bool valid = false;
 };
 
-// 天气管理器：国内 IP 库取城市和坐标 → 和风实时天气
-// 不依赖 GeoAPI。和风 Geo 在部分 Key 的安全限制下会返回 403。
+// 天气管理器：国内 IP 库取城市名 → 补经纬度 → 和风实时天气
+// HTTP 在独立任务里跑，不占用刷时钟的任务。
+// 成功结果写入 NVS，重启后先显示上次天气。
 class WeatherManager {
 public:
     static WeatherManager& getInstance();
 
-    // 更新天气数据（包含定位+天气请求，耗时较长，应在后台任务中调用）
-    bool update();
+    void Init();
 
-    WeatherData getLatestData() { return latest_data_; }
+    // 非阻塞：排队一次后台刷新
+    void RequestUpdate();
+
+    bool IsUpdating() const { return pending_.load() || refreshing_.load(); }
+
+    bool LastFetchOk() const { return last_fetch_ok_.load(); }
+
+    WeatherData getLatestData();
 
     void setApiConfig(const char* key, const char* host);
 
@@ -35,25 +49,38 @@ public:
                             const std::string& update_time = "");
 
 private:
-    WeatherManager();
-    WeatherData latest_data_;
+    static constexpr EventBits_t kBitRefresh = BIT0;
 
+    WeatherManager() = default;
+
+    static void UpdateTaskEntry(void* arg);
+    void UpdateTask();
+    bool update();
+    bool locateByIp(std::string* city, double* lat, double* lon, bool* has_coord);
+    bool httpGet(const char* url, const char* host_header, int timeout_ms,
+                 bool request_gzip, std::string* body, int* status_out);
+    bool parseWeatherJson(const char* json_data);
+    bool hasFixedCity() const;
+    void LoadCache();
+    void SaveCache();
+    void StoreLatestLocked(const WeatherData& data);
+
+    WeatherData latest_data_;
     std::string api_key_;
     std::string api_host_;
     std::string city_;
 
-    // 上次成功的 IP 定位，失败时仍能继续拉天气，避免整段卡住后一直 -- --°C
     std::string cached_city_;
     double cached_lat_ = 0;
     double cached_lon_ = 0;
     bool cached_has_coord_ = false;
     bool has_cached_location_ = false;
 
-    static esp_err_t http_event_handler(esp_http_client_event_t *evt);
-    bool httpGet(const char* url, const char* host_header, int timeout_ms, bool request_gzip,
-                 int* status_out, bool follow_redirect = true);
-    const char* payloadJson();
-    bool hasFixedCity() const;
-    bool locateByIp(std::string* city, double* lat, double* lon, bool* has_coord);
-    void parseWeatherJson(const char* json_data);
+    SemaphoreHandle_t mutex_ = nullptr;
+    EventGroupHandle_t events_ = nullptr;
+    TaskHandle_t task_ = nullptr;
+    std::atomic<bool> initialized_{false};
+    std::atomic<bool> pending_{false};
+    std::atomic<bool> refreshing_{false};
+    std::atomic<bool> last_fetch_ok_{false};
 };
